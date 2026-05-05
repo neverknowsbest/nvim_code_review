@@ -1,6 +1,7 @@
 local layout = require("code_review.layout")
 local viewer = require("code_review.viewer")
 local git = require("code_review.git")
+local util = require("code_review.util")
 
 local M = {}
 
@@ -16,17 +17,13 @@ M._keymaps_set = false
 local has_devicons, devicons = pcall(require, "nvim-web-devicons")
 local ns = vim.api.nvim_create_namespace("code_review_browser")
 
-local KEYS_HELP = nil
-
 local function get_keys_help()
-  if KEYS_HELP then return KEYS_HELP end
   local k = require("code_review.config").current.keys
-  KEYS_HELP = string.format(
-    "%s: advance  %s: diff  %s/%s: hunk  %s/%s: file  %s/%s: mark  %s: mark+next  %s: close ",
+  return string.format(
+    "%s: advance  %s: diff  %s/%s: hunk  %s/%s: file  %s: mark+next  r: refresh  %s: close ",
     k.advance, k.toggle_diff, k.next_hunk, k.prev_hunk,
-    k.next_file, k.prev_file, k.mark_file, k.mark_all, k.mark_and_next, k.quit
+    k.next_file, k.prev_file, k.mark_and_next, k.quit
   )
-  return KEYS_HELP
 end
 
 local function get_icon(filepath)
@@ -42,7 +39,7 @@ local function format_file_line(entry, stats, viewed_hunks, idx, max_name_len)
   local pad = string.rep(" ", math.max(0, max_name_len - display_width + 2))
   local seen = viewed_hunks[idx] and vim.tbl_count(viewed_hunks[idx]) or 0
   local chunk_str = string.format("%d/%d", seen, stats.chunks)
-  local stat_str = string.format("%-7s chunks  +%-4d -%-4d", chunk_str, stats.added, stats.removed)
+  local stat_str = string.format("%-7s hunks  +%-4d -%-4d", chunk_str, stats.added, stats.removed)
   return prefix .. pad .. stat_str
 end
 
@@ -58,16 +55,7 @@ local function build_header(file_count, repos, total_added, total_removed, win_w
 end
 
 local function apply_stat_highlights(buf, lines)
-  for lnum, l in ipairs(lines) do
-    local s, e = l:find("%+%d+")
-    if s then
-      vim.api.nvim_buf_set_extmark(buf, ns, lnum - 1, s - 1, { end_col = e, hl_group = "DiffAdd" })
-    end
-    s, e = l:find("%-%d+", (e or 0) + 1)
-    if s then
-      vim.api.nvim_buf_set_extmark(buf, ns, lnum - 1, s - 1, { end_col = e, hl_group = "DiffDelete" })
-    end
-  end
+  util.apply_stat_highlights(buf, ns, lines)
 end
 
 local function calc_max_name_len(file_entries)
@@ -156,15 +144,12 @@ function M.populate(file_entries, repos)
   if not M._keymaps_set then
     local opts = { buffer = state.browser_buf, nowait = true, silent = true }
     vim.keymap.set("n", "<CR>", function() M.select() end, opts)
-    vim.keymap.set("n", "l", function() M.select() end, opts)
     vim.keymap.set("n", "q", function() require("code_review").close() end, opts)
+    util.set_nav_keymaps(state.browser_buf)
     M._keymaps_set = true
   end
 
-  vim.wo[state.browser_win].cursorline = true
-  vim.wo[state.browser_win].number = false
-  vim.wo[state.browser_win].relativenumber = false
-  vim.wo[state.browser_win].signcolumn = "no"
+  util.setup_list_win(state.browser_win)
 
   -- Cursor on first file line
   local first_line = M.line_for_idx(1)

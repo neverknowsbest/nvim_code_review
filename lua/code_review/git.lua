@@ -2,14 +2,26 @@ local M = {}
 
 M._cache = {}
 M._base_ref = nil
+M._head_override = nil  -- for single commit mode
+M._repos = nil
 
 function M.clear_cache()
   M._cache = {}
+  M._repos = nil
+end
+
+function M.reset()
+  M._cache = {}
+  M._repos = nil
+  M._base_ref = nil
+  M._head_override = nil
 end
 
 function M.set_base(ref)
   if ref then
-    local out = vim.fn.systemlist("git rev-parse --verify " .. vim.fn.shellescape(ref))
+    local repos = M.find_repos()
+    local repo_path = repos[1] and repos[1].path or vim.fn.getcwd()
+    vim.fn.systemlist("git -C " .. vim.fn.shellescape(repo_path) .. " rev-parse --verify " .. vim.fn.shellescape(ref))
     if vim.v.shell_error ~= 0 then
       vim.notify("Invalid git ref: " .. ref, vim.log.levels.ERROR)
       return false
@@ -19,10 +31,23 @@ function M.set_base(ref)
   return true
 end
 
+function M.count_file_lines(filepath)
+  local count = 0
+  local fh = io.open(filepath, "r")
+  if fh then
+    for _ in fh:lines() do count = count + 1 end
+    fh:close()
+  end
+  return count
+end
+
 function M.find_repos()
+  if M._repos then return M._repos end
+
   local cwd = vim.fn.getcwd()
   if vim.fn.isdirectory(cwd .. "/.git") == 1 then
-    return { { path = cwd, name = vim.fn.fnamemodify(cwd, ":t") } }
+    M._repos = { { path = cwd, name = vim.fn.fnamemodify(cwd, ":t") } }
+    return M._repos
   end
 
   local repos = {}
@@ -34,7 +59,8 @@ function M.find_repos()
     end
   end
   table.sort(repos, function(a, b) return a.name < b.name end)
-  return repos
+  M._repos = repos
+  return M._repos
 end
 
 function M.get_all_stats(repo_path)
@@ -42,7 +68,10 @@ function M.get_all_stats(repo_path)
   local cmd = "git -C " .. vim.fn.shellescape(repo_path)
 
   if M._base_ref then
-    local output = vim.fn.systemlist(cmd .. " diff --numstat " .. vim.fn.shellescape(M._base_ref))
+    local diff_range = M._head_override
+      and (M._base_ref .. ".." .. M._head_override)
+      or M._base_ref
+    local output = vim.fn.systemlist(cmd .. " diff --numstat " .. vim.fn.shellescape(diff_range))
     if vim.v.shell_error ~= 0 then return stats end
     for _, line in ipairs(output) do
       local a, r, f = line:match("^(%d+)%s+(%d+)%s+(.+)$")
@@ -95,7 +124,10 @@ function M.get_hunks(filepath, repo_path)
   local output
 
   if M._base_ref then
-    output = vim.fn.systemlist(cmd .. " diff -U0 " .. vim.fn.shellescape(M._base_ref) .. " -- " .. vim.fn.shellescape(filepath))
+    local diff_range = M._head_override
+      and (M._base_ref .. ".." .. M._head_override)
+      or M._base_ref
+    output = vim.fn.systemlist(cmd .. " diff -U0 " .. vim.fn.shellescape(diff_range) .. " -- " .. vim.fn.shellescape(filepath))
   else
     -- Use diff HEAD to combine staged+unstaged without duplicates
     output = vim.fn.systemlist(cmd .. " diff -U0 HEAD -- " .. vim.fn.shellescape(filepath))
@@ -133,8 +165,16 @@ function M.load_all_repos(repos)
   for _, repo in ipairs(repos) do
     local rp = repo.path
     if M._base_ref then
-      table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-only", M._base_ref }, repo = rp, kind = "branch_files" })
-      table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--numstat", M._base_ref }, repo = rp, kind = "numstat" })
+      local diff_range = M._head_override
+        and (M._base_ref .. ".." .. M._head_override)
+        or M._base_ref
+      table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-only", diff_range }, repo = rp, kind = "branch_files" })
+      table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--numstat", diff_range }, repo = rp, kind = "numstat" })
+      if not M._head_override then
+        -- Also get committed vs uncommitted breakdown
+        table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-only", M._base_ref .. "..HEAD" }, repo = rp, kind = "committed" })
+        table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-only", "HEAD" }, repo = rp, kind = "uncommitted" })
+      end
     else
       table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-only", "HEAD" }, repo = rp, kind = "changed" })
       table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--numstat", "HEAD" }, repo = rp, kind = "numstat" })
@@ -191,10 +231,33 @@ function M.load_all_repos(repos)
 
     if M._base_ref then
       local seen = {}
+      local committed_set = {}
+      local uncommitted_set = {}
+
+      for _, r in ipairs(results) do
+        if r.job.repo == rp and r.code == 0 then
+          if r.job.kind == "committed" then
+            for _, f in ipairs(r.lines) do committed_set[f] = true end
+          elseif r.job.kind == "uncommitted" then
+            for _, f in ipairs(r.lines) do uncommitted_set[f] = true end
+          end
+        end
+      end
+
       for _, f in ipairs(branch_files) do
         if f ~= "" and not seen[f] then
           seen[f] = true
-          table.insert(all_files, { path = f, status = "M", repo = rp })
+          local status
+          if M._head_override then
+            status = "C"
+          elseif committed_set[f] and uncommitted_set[f] then
+            status = "CU"
+          elseif committed_set[f] then
+            status = "C"
+          else
+            status = "U"
+          end
+          table.insert(all_files, { path = f, status = status, repo = rp })
           M._cache[rp .. ":" .. f .. ":stats"] = repo_stats[f] or { added = 0, removed = 0 }
         end
       end
@@ -223,12 +286,15 @@ function M.load_all_repos(repos)
         end
       end
 
-      -- Untracked files
+      -- Untracked files — count lines as additions
       for _, f in ipairs(untracked_files) do
         if f ~= "" and not seen[f] then
           seen[f] = true
+          local line_count = M.count_file_lines(rp .. "/" .. f)
           table.insert(all_files, { path = f, status = "N", repo = rp })
-          M._cache[rp .. ":" .. f .. ":stats"] = { added = 0, removed = 0 }
+          M._cache[rp .. ":" .. f .. ":stats"] = { added = line_count, removed = 0 }
+          M._cache[rp .. ":" .. f .. ":hunks"] = line_count > 0
+            and { { start = 1, count = line_count, type = "change" } } or {}
         end
       end
     end

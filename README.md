@@ -1,21 +1,23 @@
 # nvim_code_review
 
-A Neovim plugin for reviewing uncommitted git changes. Opens a dedicated tab with full syntax-highlighted files and a changes browser, designed for efficient pre-commit review workflows.
+A Neovim plugin for reviewing git changes. Opens a dedicated tab with full syntax-highlighted files, a changes browser, and a git log panel — designed for efficient code review workflows.
 
 ## Features
 
 - Full file view with syntax highlighting (not raw diff output)
 - Gutter signs marking changed/deleted lines
 - Side-by-side diff toggle showing the base version with synced scrolling
-- Changes browser with per-file stats (chunks, lines added/removed)
+- Changes browser with per-file stats (hunks, lines added/removed)
+- Git log panel with commit selection and range/single-commit modes
 - Multi-repository workspace support (auto-discovers git repos under cwd)
-- Branch comparison: `:CodeReview main` to review changes against any ref
-- Untracked file support
+- Branch/commit comparison: `:CodeReview main` or select commits in the log
+- Untracked file support with `[N]` status, committed changes with `[C]`
 - Hunk-by-hunk navigation with wrap-around
-- Progress tracking: viewed chunks per file, viewed file dimming
-- `<Space>` advance flow: walk through all changes with a single key
+- Progress tracking: viewed hunks per file, viewed file dimming
+- `<CR>` advance flow: walk through all changes with a single key
 - Parallel git loading for fast startup in multi-repo workspaces
-- Auto-refresh on focus
+- Auto-refresh on focus and tab switch
+- Hot reload with `:CodeReviewReload` during development
 - Fully configurable keybindings, signs, and behavior
 
 ## Installation
@@ -47,20 +49,47 @@ A Neovim plugin for reviewing uncommitted git changes. Opens a dedicated tab wit
 - `:CodeReview` — review uncommitted changes
 - `:CodeReview main` — review changes against a branch
 - `:CodeReviewClose` — close the review tab
+- `:CodeReviewReload` — hot reload plugin (picks up code changes without restart)
 
 ## Keybindings
 
+### Viewer (file pane)
+
 | Key | Action |
 |-----|--------|
-| `<Space>` | Advance: next hunk, or mark file + next file at end |
+| `<CR>` | Advance: next hunk, or mark file + next file at end |
 | `d` | Toggle side-by-side diff with base version |
 | `]c` / `[c` | Next / previous hunk |
 | `]f` / `[f` | Next / previous file |
 | `m` | Mark current file as fully viewed |
 | `M` | Mark all files as viewed |
 | `<Tab>` | Mark current file as viewed + next file |
-| `<CR>` / `l` | Open file under cursor (in browser pane) |
+| `L` | Toggle git log panel |
+| `r` | Refresh file list |
 | `q` | Close review |
+
+### File browser
+
+| Key | Action |
+|-----|--------|
+| `<CR>` | Open file under cursor |
+| `q` | Close review |
+
+### Git log
+
+| Key | Action |
+|-----|--------|
+| `<CR>` | Select commit (sets review range) |
+| `s` | Toggle range/single-commit mode |
+| `q` | Close review |
+
+### Navigation (all panes)
+
+| Key | Action |
+|-----|--------|
+| `gv` | Go to viewer |
+| `gf` | Go to file browser |
+| `gl` | Go to git log (opens if closed) |
 
 ## Configuration
 
@@ -72,13 +101,19 @@ require("code_review").setup({
   signs = { change = "│", delete = "▁" },
   show_untracked = true,
   auto_refresh = true,
+  log = {
+    show_on_open = true,
+    max_commits = 20,
+    default_mode = "range",  -- "range" or "single"
+  },
   keys = {
-    advance = "<Space>",
+    advance = "<CR>",
     next_hunk = "]c",
     prev_hunk = "[c",
     next_file = "]f",
     prev_file = "[f",
     toggle_diff = "d",
+    toggle_log = "L",
     mark_file = "m",
     mark_all = "M",
     mark_and_next = "<Tab>",
@@ -90,20 +125,35 @@ require("code_review").setup({
 ## Browser pane
 
 ```
- 5 files changed across 2 repos  +62 -23       <Space>: advance  d: diff  ...
+ 5 files changed across 2 repos  +62 -23       <CR>: advance  d: diff  ...
 ──────────────────────────────────────────────────────────────────────────────────
  ┌ service-a/
-  [U]  src/handler.lua       2/3     chunks  +20   -5
-  [S]  src/utils.lua         0/1     chunks  +8    -3
+  [U]  src/handler.lua       2/3     hunks  +20   -5
+  [S]  src/utils.lua         0/1     hunks  +8    -3
  ┌ service-b/
-  [SU] lib/client.ts         1/4     chunks  +30   -10
-  [N]  new_file.ts           0/0     chunks  +0    -0
+  [CU] lib/client.ts         1/4     hunks  +30   -10
+  [N]  new_file.ts           0/0     hunks  +0    -0
 ```
 
-- `[S]` staged, `[U]` unstaged, `[SU]` both, `[N]` new/untracked, `[M]` modified (branch diff)
-- Chunk progress updates as you navigate hunks
+- `[S]` staged, `[U]` unstaged, `[SU]` both, `[N]` new/untracked
+- `[C]` committed, `[CU]` committed + uncommitted changes
+- Hunk progress updates as you navigate hunks
 - Viewed files are dimmed; current file is highlighted
 - File type icons shown if nvim-web-devicons is installed
+
+## Git log panel
+
+```
+ Git Log [range to HEAD]                    <CR>: select  s: mode  q: close
+──────────────────────────────────────────────────────────────────────────────
+  ●        uncommitted changes   3f   +42   -10
+  a575861  feat: v0.2.0          8f   +536  -335
+  d4595d4  Initial commit        10f  +1169 -0
+```
+
+- Select a commit to set the review base (shows all changes from that commit to HEAD)
+- Toggle single-commit mode with `s` to review just one commit
+- "uncommitted changes" entry resets to default mode
 
 ## Multi-repo support
 

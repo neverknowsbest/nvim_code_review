@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.3.0 (2026-05-05)
+
+### Features
+- Git log panel (`L`) with commit selection and range/single-commit modes
+- Committed vs uncommitted file status indicators (`[C]`, `[CU]`)
+- Edit mode (`e`) — open real file for editing, `gv` to return to review
+- Pane navigation: `gv`/`gf`/`gl` to switch between viewer/browser/log
+- `:CodeReviewReload` for hot-reloading during development
+- Manual refresh (`r`) updates viewer and file list
+- Auto-refresh on `TabEnter` in addition to `FocusGained`
+- Untracked files show total line count as additions
+- Uncommitted changes in log includes untracked file stats
+- `log.show_on_open`, `log.max_commits`, `log.default_mode` config options
+- Configurable `toggle_log`, `refresh`, `edit` keys
+
+### Bug Fixes
+- Fixed shell injection via unescaped git refs in viewer
+- Fixed stale state after close preventing clean re-open (per-module `reset()`)
+- Fixed buffer leak (`bufhidden=wipe` for scratch buffers, `hide` only for viewer)
+- Fixed `vim.system():wait()` blocking indefinitely (5s timeout)
+- Fixed diff pane remaining open when entering edit mode
+- Fixed viewer losing keymaps after search modal replaced buffer
+- Fixed auto-refresh resetting cursor position
+- Fixed log panel double-highlighting file browser
+- Fixed indentation inconsistency (all files now use 2 spaces)
+
+### Code Quality
+- Extracted shared utilities to `util.lua` (scratch buf, list win, nav keymaps, stat highlights)
+- Per-module `reset()` methods replace cross-module state mutation
+- Keymap guard in log panel prevents duplicate registration
+- Config validation for `default_mode`, `max_commits`, `browser_height`
+- `find_repos()` cached, invalidated on refresh
+- `count_file_lines()` extracted as reusable function
+- Renamed "chunks" to "hunks" throughout
+
 ## v0.2.0 (2026-05-05)
 
 ### Features

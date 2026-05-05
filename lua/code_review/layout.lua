@@ -1,3 +1,4 @@
+local util = require("code_review.util")
 local M = {}
 
 M.state = {
@@ -16,9 +17,7 @@ function M.open()
   M.state.viewer_buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_set_current_buf(M.state.viewer_buf)
   M.state.viewer_win = vim.api.nvim_get_current_win()
-  vim.bo[M.state.viewer_buf].buftype = "nofile"
-  vim.bo[M.state.viewer_buf].bufhidden = "wipe"
-  vim.bo[M.state.viewer_buf].swapfile = false
+  util.setup_scratch_buf(M.state.viewer_buf, true)  -- keep alive for edit mode
   vim.b[M.state.viewer_buf].lsp_disabled = true
 
   -- Bottom pane: browser
@@ -27,9 +26,7 @@ function M.open()
   M.state.browser_buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_set_current_buf(M.state.browser_buf)
   M.state.browser_win = vim.api.nvim_get_current_win()
-  vim.bo[M.state.browser_buf].buftype = "nofile"
-  vim.bo[M.state.browser_buf].bufhidden = "wipe"
-  vim.bo[M.state.browser_buf].swapfile = false
+  util.setup_scratch_buf(M.state.browser_buf)
 
   return M.state
 end
