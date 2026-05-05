@@ -32,14 +32,15 @@ function M.show_file(filepath, repo_path)
   -- Read file contents with safe handle management
   local abs_path = repo_path .. "/" .. filepath
   local lines = {}
+  local _, head_override = git.get_ref_for_repo(repo_path)
 
-  if git._head_override then
+  if head_override then
     -- Single commit mode: show file at the commit, not working tree
     local cmd = "git -C " .. vim.fn.shellescape(repo_path)
-      .. " show " .. vim.fn.shellescape(git._head_override) .. ":" .. vim.fn.shellescape(filepath)
+      .. " show " .. vim.fn.shellescape(head_override) .. ":" .. vim.fn.shellescape(filepath)
     lines = vim.fn.systemlist(cmd)
     if vim.v.shell_error ~= 0 then
-      lines = { "-- Unable to read file at " .. git._head_override .. ": " .. filepath }
+      lines = { "-- Unable to read file at " .. head_override .. ": " .. filepath }
     end
   else
     local f = io.open(abs_path, "r")
@@ -113,13 +114,22 @@ function M.show_file(filepath, repo_path)
     end
   end
 
-  -- Go to first hunk (with bounds check)
+  -- Go to first unviewed hunk (with bounds check)
   if #hunks > 0 then
-    local target = math.max(1, math.min(hunks[1].start, line_count))
+    local browser = require("code_review.browser")
+    local idx = browser.current_idx
+    local viewed = browser.viewed_hunks[idx] or {}
+    local target_hunk = hunks[1]
+    for _, hunk in ipairs(hunks) do
+      if not viewed[hunk.start] then
+        target_hunk = hunk
+        break
+      end
+    end
+    local target = math.max(1, math.min(target_hunk.start, line_count))
     vim.api.nvim_win_set_cursor(state.viewer_win, { target, 0 })
     vim.api.nvim_win_call(state.viewer_win, function() vim.cmd("normal! zz") end)
-    local browser = require("code_review.browser")
-    browser.mark_hunk_viewed(browser.current_idx, hunks[1].start)
+    browser.mark_hunk_viewed(idx, target_hunk.start)
   else
     vim.api.nvim_win_set_cursor(state.viewer_win, { 1, 0 })
   end
@@ -206,7 +216,8 @@ function M._open_diff()
   if not M._current_file or not M._current_repo then return end
 
   -- Get base version of the file
-  local ref = git._base_ref or "HEAD"
+  local base_ref, _ = git.get_ref_for_repo(M._current_repo)
+  local ref = base_ref or "HEAD"
   local cmd = "git -C " .. vim.fn.shellescape(M._current_repo)
     .. " show " .. vim.fn.shellescape(ref) .. ":" .. vim.fn.shellescape(M._current_file)
   local lines = vim.fn.systemlist(cmd)
@@ -283,12 +294,17 @@ function M.unedit()
     return
   end
   if not M._editing then return end
+
+  local cursor = vim.api.nvim_win_get_cursor(state.viewer_win)
   M._editing = false
 
   -- Restore review buffer and re-render
   vim.api.nvim_win_set_buf(state.viewer_win, state.viewer_buf)
   if M._current_file and M._current_repo then
     M.show_file(M._current_file, M._current_repo)
+    local line_count = vim.api.nvim_buf_line_count(state.viewer_buf)
+    local safe_cursor = { math.min(cursor[1], line_count), cursor[2] }
+    pcall(vim.api.nvim_win_set_cursor, state.viewer_win, safe_cursor)
   end
 end
 

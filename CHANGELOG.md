@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.4.0 (2026-05-05)
+
+### Features
+- Session persistence: review progress saved between nvim sessions (`.code_review_session.json`)
+- Multi-repo log: `<Tab>` cycles between repos in the git log panel
+- Per-repo commit selection: selecting a commit only affects that repo's files
+- Skip deleted files in `<CR>` advance flow (auto-marks them as viewed)
+- Viewer jumps to first *unviewed* hunk when opening a file
+- Header gracefully hides help text when window is too narrow
+- `nowrap` on browser/log panes for clean display
+
+### Bug Fixes
+- Fixed forward-reference crash (`mark_file` used before declaration)
+- Fixed `set_repo_ref(nil, nil)` permanently shadowing global base ref
+- Fixed redundant `find_repos()` call in log refresh
+- Fixed `file_exists` always returning true in single-commit mode
+- Fixed cursor position lost when returning from edit mode
+- Fixed log losing selection state on close/reopen
+- Fixed session restore not updating browser display
+- Fixed stat highlights matching `+N` in commit messages
+- Fixed extra `end` causing load error in viewer.lua
+
+### Code Quality
+- Session save notifies on write failure
+- Session restore validates `current_idx` against actual file path
+- Cursor bounds clamped in `unedit()`
+- Consistent 2-space indentation in config.lua
+- Commit message truncation in log to prevent stat overflow
+
 ## v0.3.0 (2026-05-05)
 
 ### Features

@@ -4,6 +4,7 @@ M.defaults = {
   browser_height = 12,
   signs = { change = "│", delete = "▁" },
   show_untracked = true,
+  persist_session = true,
   auto_refresh = true,
   log = {
     show_on_open = true,

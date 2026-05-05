@@ -38,8 +38,9 @@ local function format_file_line(entry, stats, viewed_hunks, idx, max_name_len)
   local display_width = vim.fn.strdisplaywidth(prefix)
   local pad = string.rep(" ", math.max(0, max_name_len - display_width + 2))
   local seen = viewed_hunks[idx] and vim.tbl_count(viewed_hunks[idx]) or 0
-  local chunk_str = string.format("%d/%d", seen, stats.chunks)
-  local stat_str = string.format("%-7s hunks  +%-4d -%-4d", chunk_str, stats.added, stats.removed)
+  local total = stats.chunks
+  local chunk_str = total and string.format("%d/%d", seen, total) or "-"
+  local stat_str = string.format("%-7s h  +%-4d -%-4d", chunk_str, stats.added, stats.removed)
   return prefix .. pad .. stat_str
 end
 
@@ -47,9 +48,16 @@ local function build_header(file_count, repos, total_added, total_removed, win_w
   local repo_label = #repos > 1 and string.format(" across %d repos", #repos) or ""
   local left = string.format(" %d files changed%s  +%d -%d", file_count, repo_label, total_added, total_removed)
   local help = get_keys_help()
-  local padding = math.max(1, win_width - #left - #help)
+  local remaining = win_width - #left
+  local header
+  if remaining > #help + 2 then
+    local padding = remaining - #help
+    header = left .. string.rep(" ", padding) .. help
+  else
+    header = left
+  end
   return {
-    left .. string.rep(" ", padding) .. help,
+    header,
     string.rep("─", win_width),
   }
 end
@@ -107,8 +115,7 @@ function M.populate(file_entries, repos)
   local stats = {}
   for i, entry in ipairs(file_entries) do
     local added, removed = git.get_file_stats(entry.path, entry.repo)
-    local hunks = git.get_hunks(entry.path, entry.repo)
-    stats[i] = { added = added, removed = removed, chunks = #hunks }
+    stats[i] = { added = added, removed = removed, chunks = nil }
     total_added = total_added + added
     total_removed = total_removed + removed
   end
@@ -152,9 +159,9 @@ function M.populate(file_entries, repos)
   util.setup_list_win(state.browser_win)
 
   -- Cursor on first file line
-  local first_line = M.line_for_idx(1)
-  vim.api.nvim_win_set_cursor(state.browser_win, { first_line, 0 })
   if #file_entries > 0 then
+    local first_line = M.line_for_idx(1)
+    pcall(vim.api.nvim_win_set_cursor, state.browser_win, { first_line, 0 })
     viewer.show_file(file_entries[1].path, file_entries[1].repo)
     M.highlight_current()
   end
@@ -212,6 +219,12 @@ function M.mark_hunk_viewed(file_idx, hunk_start)
     return
   end
   M.viewed_hunks[file_idx][hunk_start] = true
+  -- Lazily fill chunk count on first hunk view
+  if M.stats[file_idx] and not M.stats[file_idx].chunks then
+    local entry = M.files[file_idx]
+    local hunks = git.get_hunks(entry.path, entry.repo)
+    M.stats[file_idx].chunks = #hunks
+  end
   M.update_file_line(file_idx)
 end
 

@@ -1,9 +1,10 @@
 local M = {}
 
 M._cache = {}
-M._base_ref = nil
+M._base_ref = nil       -- global base ref (from :CodeReview <ref>)
 M._head_override = nil  -- for single commit mode
 M._repos = nil
+M._repo_refs = {}       -- per-repo base refs (from log selection)
 
 function M.clear_cache()
   M._cache = {}
@@ -15,6 +16,7 @@ function M.reset()
   M._repos = nil
   M._base_ref = nil
   M._head_override = nil
+  M._repo_refs = {}
 end
 
 function M.set_base(ref)
@@ -29,6 +31,22 @@ function M.set_base(ref)
   end
   M._base_ref = ref
   return true
+end
+
+function M.set_repo_ref(repo_path, ref, head_override)
+  if ref == nil and head_override == nil then
+    M._repo_refs[repo_path] = nil
+  else
+    M._repo_refs[repo_path] = { base = ref, head = head_override }
+  end
+end
+
+function M.get_ref_for_repo(repo_path)
+  local rr = M._repo_refs[repo_path]
+  if rr then
+    return rr.base, rr.head
+  end
+  return M._base_ref, M._head_override
 end
 
 function M.count_file_lines(filepath)
@@ -66,11 +84,12 @@ end
 function M.get_all_stats(repo_path)
   local stats = {}
   local cmd = "git -C " .. vim.fn.shellescape(repo_path)
+  local base_ref, head_override = M.get_ref_for_repo(repo_path)
 
-  if M._base_ref then
-    local diff_range = M._head_override
-      and (M._base_ref .. ".." .. M._head_override)
-      or M._base_ref
+  if base_ref then
+    local diff_range = head_override
+      and (base_ref .. ".." .. head_override)
+      or base_ref
     local output = vim.fn.systemlist(cmd .. " diff --numstat " .. vim.fn.shellescape(diff_range))
     if vim.v.shell_error ~= 0 then return stats end
     for _, line in ipairs(output) do
@@ -122,11 +141,12 @@ function M.get_hunks(filepath, repo_path)
   local cmd = "git -C " .. vim.fn.shellescape(repo_path)
   local hunks = {}
   local output
+  local base_ref, head_override = M.get_ref_for_repo(repo_path)
 
-  if M._base_ref then
-    local diff_range = M._head_override
-      and (M._base_ref .. ".." .. M._head_override)
-      or M._base_ref
+  if base_ref then
+    local diff_range = head_override
+      and (base_ref .. ".." .. head_override)
+      or base_ref
     output = vim.fn.systemlist(cmd .. " diff -U0 " .. vim.fn.shellescape(diff_range) .. " -- " .. vim.fn.shellescape(filepath))
   else
     -- Use diff HEAD to combine staged+unstaged without duplicates
@@ -164,15 +184,15 @@ function M.load_all_repos(repos)
   local jobs = {}
   for _, repo in ipairs(repos) do
     local rp = repo.path
-    if M._base_ref then
-      local diff_range = M._head_override
-        and (M._base_ref .. ".." .. M._head_override)
-        or M._base_ref
+    local base_ref, head_override = M.get_ref_for_repo(rp)
+    if base_ref then
+      local diff_range = head_override
+        and (base_ref .. ".." .. head_override)
+        or base_ref
       table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-only", diff_range }, repo = rp, kind = "branch_files" })
       table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--numstat", diff_range }, repo = rp, kind = "numstat" })
-      if not M._head_override then
-        -- Also get committed vs uncommitted breakdown
-        table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-only", M._base_ref .. "..HEAD" }, repo = rp, kind = "committed" })
+      if not head_override then
+        table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-only", base_ref .. "..HEAD" }, repo = rp, kind = "committed" })
         table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-only", "HEAD" }, repo = rp, kind = "uncommitted" })
       end
     else
@@ -229,7 +249,8 @@ function M.load_all_repos(repos)
       end
     end
 
-    if M._base_ref then
+    local repo_base, repo_head = M.get_ref_for_repo(rp)
+    if repo_base then
       local seen = {}
       local committed_set = {}
       local uncommitted_set = {}
@@ -248,7 +269,7 @@ function M.load_all_repos(repos)
         if f ~= "" and not seen[f] then
           seen[f] = true
           local status
-          if M._head_override then
+          if repo_head then
             status = "C"
           elseif committed_set[f] and uncommitted_set[f] then
             status = "CU"

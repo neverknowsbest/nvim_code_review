@@ -8,13 +8,17 @@ function M.apply_stat_highlights(buf, ns, lines, start_line)
   start_line = start_line or 0
   for i, l in ipairs(lines) do
     local lnum = start_line + i - 1
-    local s, e = l:find("%+%d+")
+    -- Search from the right to avoid matching commit message content
+    local s, e = l:find("  %+%d+%s+%-%d+%s*$")
     if s then
-      vim.api.nvim_buf_set_extmark(buf, ns, lnum, s - 1, { end_col = e, hl_group = "DiffAdd" })
-    end
-    s, e = l:find("%-%d+", (e or 0) + 1)
-    if s then
-      vim.api.nvim_buf_set_extmark(buf, ns, lnum, s - 1, { end_col = e, hl_group = "DiffDelete" })
+      local ps, pe = l:find("%+%d+", s)
+      if ps then
+        vim.api.nvim_buf_set_extmark(buf, ns, lnum, ps - 1, { end_col = pe, hl_group = "DiffAdd" })
+      end
+      local ms, me = l:find("%-%d+", pe or s)
+      if ms then
+        vim.api.nvim_buf_set_extmark(buf, ns, lnum, ms - 1, { end_col = me, hl_group = "DiffDelete" })
+      end
     end
   end
 end
@@ -30,6 +34,7 @@ function M.setup_list_win(win)
   vim.wo[win].number = false
   vim.wo[win].relativenumber = false
   vim.wo[win].signcolumn = "no"
+  vim.wo[win].wrap = false
 end
 
 function M.set_nav_keymaps(buf)

@@ -14,8 +14,9 @@ A Neovim plugin for reviewing git changes. Opens a dedicated tab with full synta
 - Untracked file support with `[N]` status, committed changes with `[C]`
 - Hunk-by-hunk navigation with wrap-around
 - Progress tracking: viewed hunks per file, viewed file dimming
-- `<CR>` advance flow: walk through all changes with a single key
+- `<CR>` advance flow: walk through all changes with a single key (skips deleted files)
 - Parallel git loading for fast startup in multi-repo workspaces
+- Session persistence: resume reviews where you left off
 - Auto-refresh on focus and tab switch
 - Hot reload with `:CodeReviewReload` during development
 - Fully configurable keybindings, signs, and behavior
@@ -59,14 +60,19 @@ A Neovim plugin for reviewing git changes. Opens a dedicated tab with full synta
 |-----|--------|
 | `<CR>` | Advance: next hunk, or mark file + next file at end |
 | `d` | Toggle side-by-side diff with base version |
+| `e` | Enter edit mode (open real file for editing) |
 | `]c` / `[c` | Next / previous hunk |
-| `]f` / `[f` | Next / previous file |
+| `]f` / `[f` | Next / previous file (skips deleted files) |
 | `m` | Mark current file as fully viewed |
 | `M` | Mark all files as viewed |
 | `<Tab>` | Mark current file as viewed + next file |
 | `L` | Toggle git log panel |
 | `r` | Refresh file list |
 | `q` | Close review |
+
+### Edit mode
+
+Press `e` in the viewer to open the actual file for editing with full LSP, undo, and formatting support. Use `gv` to return to the review viewer (auto-refreshes diff signs).
 
 ### File browser
 
@@ -100,6 +106,7 @@ require("code_review").setup({
   browser_height = 12,
   signs = { change = "│", delete = "▁" },
   show_untracked = true,
+  persist_session = true,
   auto_refresh = true,
   log = {
     show_on_open = true,
@@ -114,6 +121,8 @@ require("code_review").setup({
     prev_file = "[f",
     toggle_diff = "d",
     toggle_log = "L",
+    refresh = "r",
+    edit = "e",
     mark_file = "m",
     mark_all = "M",
     mark_and_next = "<Tab>",
@@ -157,7 +166,11 @@ require("code_review").setup({
 
 ## Multi-repo support
 
-If your cwd is not a git repo, the plugin scans immediate subdirectories for `.git` folders and aggregates changes across all of them. No configuration needed.
+If your cwd is not a git repo, the plugin scans immediate subdirectories for `.git` folders and aggregates changes across all of them. Use `<Tab>` in the git log panel to cycle between repos. No configuration needed.
+
+## Session persistence
+
+Review progress (viewed files, viewed hunks, current position) is saved to `.code_review_session.json` in your cwd when you close the review. Re-opening `:CodeReview` restores your progress. Add this file to your `.gitignore`.
 
 ## Requirements
 

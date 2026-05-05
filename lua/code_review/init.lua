@@ -4,6 +4,7 @@ local browser = require("code_review.browser")
 local viewer = require("code_review.viewer")
 local config = require("code_review.config")
 local log = require("code_review.log")
+local session = require("code_review.session")
 
 local M = {}
 local augroup = nil
@@ -89,7 +90,7 @@ function M.open(base_ref)
 
   local all_files = git.load_all_repos(repos)
 
-  if #all_files == 0 then
+  if #all_files == 0 and not config.current.log.show_on_open then
     vim.notify("No uncommitted changes found", vim.log.levels.INFO)
     return
   end
@@ -104,6 +105,29 @@ function M.open(base_ref)
   end
 
   browser.populate(all_files, repos)
+
+  -- Restore previous session state
+  session.restore(browser)
+  if browser.current_idx > 1 or next(browser.viewed) or next(browser.viewed_hunks) then
+    -- Re-render file lines with restored hunk counts
+    for i, _ in pairs(browser.viewed_hunks) do
+      browser.update_file_line(i)
+    end
+    for i, _ in pairs(browser.viewed) do
+      if not browser.viewed_hunks[i] then
+        browser.update_file_line(i)
+      end
+    end
+    browser.highlight_current()
+    local entry = browser.files[browser.current_idx]
+    if entry then
+      viewer.show_file(entry.path, entry.repo)
+    end
+    local bstate = layout.state
+    if bstate.browser_win and vim.api.nvim_win_is_valid(bstate.browser_win) then
+      vim.api.nvim_win_set_cursor(bstate.browser_win, { browser.line_for_idx(browser.current_idx), 0 })
+    end
+  end
 
   -- Focus viewer (file pane)
   vim.api.nvim_set_current_win(layout.state.viewer_win)
@@ -129,52 +153,68 @@ end
 
 function M.refresh()
   git.clear_cache()
+  if log.is_open() then log.refresh() end
   local repos = git.find_repos()
   local all_files = git.load_all_repos(repos)
-  if #all_files == 0 then
-    vim.notify("No uncommitted changes", vim.log.levels.INFO)
-    return
-  end
 
-  -- Check if file list changed
-  local same = #all_files == #browser.files
-  if same then
-    for i, f in ipairs(all_files) do
-      if f.path ~= browser.files[i].path or f.repo ~= browser.files[i].repo then
-        same = false
-        break
+  -- Preserve position
+  local prev_idx = browser.current_idx
+  local prev_viewed = browser.viewed
+  local prev_viewed_hunks = browser.viewed_hunks
+
+  browser.populate(all_files, repos)
+
+  if #browser.files > 0 then
+    local idx = math.min(prev_idx, #browser.files)
+    if idx > 0 then
+      browser.current_idx = idx
+      browser.highlight_current()
+      local state = layout.state
+      if state.browser_win and vim.api.nvim_win_is_valid(state.browser_win) then
+        pcall(vim.api.nvim_win_set_cursor, state.browser_win, { browser.line_for_idx(idx), 0 })
+      end
+      local entry = browser.files[idx]
+      if entry and state.viewer_win and vim.api.nvim_win_is_valid(state.viewer_win) then
+        local cursor = vim.api.nvim_win_get_cursor(state.viewer_win)
+        viewer.show_file(entry.path, entry.repo)
+        pcall(vim.api.nvim_win_set_cursor, state.viewer_win, cursor)
       end
     end
-  end
-
-  if same then
-    -- File list unchanged, just update stats without resetting progress
-    browser.repos = repos
-    local stats = {}
-    for i, entry in ipairs(all_files) do
-      local added, removed = git.get_file_stats(entry.path, entry.repo)
-      local hunks = git.get_hunks(entry.path, entry.repo)
-      stats[i] = { added = added, removed = removed, chunks = #hunks }
-    end
-    browser.stats = stats
-    browser.highlight_current()
-    -- Re-render current file preserving cursor
-    local entry = browser.files[browser.current_idx]
-    if entry then
-      local state = layout.state
-      local cursor = vim.api.nvim_win_get_cursor(state.viewer_win)
-      viewer.show_file(entry.path, entry.repo)
-      pcall(vim.api.nvim_win_set_cursor, state.viewer_win, cursor)
-    end
   else
-    -- File list changed, full reset but preserve position
-    local prev_idx = math.min(browser.current_idx, #all_files)
-    browser.populate(all_files, repos)
-    if prev_idx > 1 and prev_idx <= #browser.files then
-      browser.current_idx = prev_idx
-      browser.highlight_current()
+    -- No files — clear the viewer
+    local state = layout.state
+    if state.viewer_buf and vim.api.nvim_buf_is_valid(state.viewer_buf) then
+      vim.bo[state.viewer_buf].modifiable = true
+      vim.api.nvim_buf_set_lines(state.viewer_buf, 0, -1, false, { "  No changes to review" })
+      vim.bo[state.viewer_buf].modifiable = false
     end
   end
+end
+
+local function mark_file(idx)
+  local entry = browser.files[idx]
+  if not entry then return end
+  local hunks = git.get_hunks(entry.path, entry.repo)
+  if not browser.viewed_hunks[idx] then
+    browser.viewed_hunks[idx] = {}
+  end
+  for _, hunk in ipairs(hunks) do
+    browser.viewed_hunks[idx][hunk.start] = true
+  end
+  browser.viewed[idx] = true
+  browser.update_file_line(idx)
+end
+
+local function file_exists(entry)
+  local _, head_override = git.get_ref_for_repo(entry.repo)
+  if head_override then
+    local cmd = "git -C " .. vim.fn.shellescape(entry.repo)
+      .. " cat-file -e " .. vim.fn.shellescape(head_override .. ":" .. entry.path)
+    vim.fn.system(cmd)
+    return vim.v.shell_error == 0
+  end
+  local path = entry.repo .. "/" .. entry.path
+  return vim.fn.filereadable(path) == 1
 end
 
 local function goto_file(idx)
@@ -194,35 +234,33 @@ local function goto_file(idx)
 end
 
 function M.next_file()
-  local idx = browser.current_idx + 1
-  if idx > #browser.files then
-    idx = 1
-  end
+  local start = browser.current_idx
+  local idx = start
+  repeat
+    idx = idx + 1
+    if idx > #browser.files then idx = 1 end
+    if file_exists(browser.files[idx]) then
+      goto_file(idx)
+      return
+    end
+    mark_file(idx)
+  until idx == start
   goto_file(idx)
 end
 
 function M.prev_file()
-  local idx = browser.current_idx - 1
-  if idx < 1 then
-    idx = #browser.files
-  end
+  local start = browser.current_idx
+  local idx = start
+  repeat
+    idx = idx - 1
+    if idx < 1 then idx = #browser.files end
+    if file_exists(browser.files[idx]) then
+      goto_file(idx)
+      return
+    end
+    mark_file(idx)
+  until idx == start
   goto_file(idx)
-end
-
-local function mark_file(idx)
-  local entry = browser.files[idx]
-  if not entry then
-    return
-  end
-  local hunks = git.get_hunks(entry.path, entry.repo)
-  if not browser.viewed_hunks[idx] then
-    browser.viewed_hunks[idx] = {}
-  end
-  for _, hunk in ipairs(hunks) do
-    browser.viewed_hunks[idx][hunk.start] = true
-  end
-  browser.viewed[idx] = true
-  browser.update_file_line(idx)
 end
 
 function M.mark_file_viewed()
@@ -271,6 +309,7 @@ function M.advance()
 end
 
 function M.close()
+  session.save(browser)
   if augroup then
     vim.api.nvim_del_augroup_by_id(augroup)
     augroup = nil

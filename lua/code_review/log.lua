@@ -8,6 +8,8 @@ M._buf = nil
 M._commits = {}
 M._selected = 0
 M._single_commit_mode = nil
+M._keymaps_set = false
+M._repo_idx = 1
 
 local ns = vim.api.nvim_create_namespace("code_review_log")
 
@@ -50,7 +52,9 @@ function M.open()
   util.setup_list_win(M._win)
 
   M.refresh()
-  M._selected = 1
+  if M._selected == 0 then
+    M._selected = 1
+  end
   M._highlight()
 
   -- Keymaps (set once per buffer)
@@ -58,6 +62,7 @@ function M.open()
     local opts = { buffer = M._buf, nowait = true, silent = true }
     vim.keymap.set("n", "<CR>", function() M.select() end, opts)
     vim.keymap.set("n", "s", function() M.toggle_mode() end, opts)
+    vim.keymap.set("n", "<Tab>", function() M.cycle_repo() end, opts)
     vim.keymap.set("n", "q", function() require("code_review").close() end, opts)
     util.set_nav_keymaps(M._buf)
     M._keymaps_set = true
@@ -83,7 +88,7 @@ function M.refresh()
   -- Get git log from first repo
   local repos = git.find_repos()
   if #repos == 0 then return end
-  local repo = repos[1].path
+  local repo = repos[M._repo_idx] and repos[M._repo_idx].path or repos[1].path
 
   local cfg = require("code_review.config").current.log
   local max = tostring(cfg.max_commits)
@@ -117,11 +122,20 @@ function M.refresh()
   M._commits = {}
   local display = {}
   local mode_label = M._single_commit_mode and "[single commit]" or "[range to HEAD]"
-  local left = " Git Log " .. mode_label
-  local right = "<CR>: select  s: mode  q: close "
+  local repo_label = #repos > 1
+    and string.format(" %s (%d/%d)", repos[M._repo_idx].name, M._repo_idx, #repos)
+    or ""
+  local left = " Git Log " .. mode_label .. repo_label
+  local right = #repos > 1
+    and "<CR>: select  <Tab>: repo  s: mode  q: close "
+    or "<CR>: select  s: mode  q: close "
   local win_width = vim.api.nvim_win_get_width(M._win)
-  local padding = math.max(1, win_width - #left - #right)
-  table.insert(display, left .. string.rep(" ", padding) .. right)
+  local remaining = win_width - #left
+  if remaining > #right + 2 then
+    table.insert(display, left .. string.rep(" ", remaining - #right) .. right)
+  else
+    table.insert(display, left)
+  end
   table.insert(display, string.rep("─", win_width))
 
   local util = require("code_review.util")
@@ -157,16 +171,27 @@ function M.refresh()
     end
   end
 
-  -- Find max prefix width for alignment
+  -- Find max prefix width for alignment, capped to leave room for stats
+  local stat_width = 20  -- approximate width of "3f   +42   -10"
+  local max_allowed = win_width - stat_width - 4
   local max_prefix = 0
   for _, e in ipairs(entries) do
     local w = vim.fn.strdisplaywidth(e.prefix)
     if w > max_prefix then max_prefix = w end
   end
+  max_prefix = math.min(max_prefix, max_allowed)
 
   for _, e in ipairs(entries) do
-    local pad = string.rep(" ", max_prefix - vim.fn.strdisplaywidth(e.prefix) + 2)
-    table.insert(display, e.prefix .. pad .. util.format_stat(e.files, e.ins, e.del))
+    local prefix = e.prefix
+    if vim.fn.strdisplaywidth(prefix) > max_prefix then
+      -- Truncate with ellipsis
+      while vim.fn.strdisplaywidth(prefix) > max_prefix - 1 and #prefix > 0 do
+        prefix = prefix:sub(1, #prefix - 1)
+      end
+      prefix = prefix .. "…"
+    end
+    local pad = string.rep(" ", math.max(0, max_prefix - vim.fn.strdisplaywidth(prefix) + 2))
+    table.insert(display, prefix .. pad .. util.format_stat(e.files, e.ins, e.del))
   end
 
   vim.bo[M._buf].modifiable = true
@@ -218,17 +243,22 @@ function M.select()
 
   local commit = M._commits[idx]
   local cr = require("code_review")
+  local repos = git.find_repos()
+  local repo_path = repos[M._repo_idx] and repos[M._repo_idx].path
 
   if commit.hash == nil then
-    -- Uncommitted entry selected — reset to uncommitted only
-    git.set_base(nil)
-    git._head_override = nil
+    -- Uncommitted entry — clear ref for this repo
+    if repo_path then
+      git.set_repo_ref(repo_path, nil, nil)
+    end
   elseif M._single_commit_mode then
-    git.set_base(commit.hash .. "~1")
-    git._head_override = commit.hash
+    if repo_path then
+      git.set_repo_ref(repo_path, commit.hash .. "~1", commit.hash)
+    end
   else
-    git.set_base(commit.hash)
-    git._head_override = nil
+    if repo_path then
+      git.set_repo_ref(repo_path, commit.hash .. "~1", nil)
+    end
   end
 
   git.clear_cache()
@@ -247,6 +277,15 @@ function M.toggle_mode()
   end
 end
 
+function M.cycle_repo()
+  local repos = git.find_repos()
+  if #repos <= 1 then return end
+  M._repo_idx = M._repo_idx + 1
+  if M._repo_idx > #repos then M._repo_idx = 1 end
+  M._selected = 0
+  M.refresh()
+end
+
 function M.reset()
   M._selected = 0
   git.set_base(nil)
@@ -261,6 +300,7 @@ function M.reset()
   M._selected = 0
   M._single_commit_mode = nil
   M._keymaps_set = false
+  M._repo_idx = 1
 end
 
 return M
