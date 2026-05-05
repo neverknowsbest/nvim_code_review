@@ -1,9 +1,22 @@
 local M = {}
 
 M._cache = {}
+M._base_ref = nil
 
 function M.clear_cache()
   M._cache = {}
+end
+
+function M.set_base(ref)
+  if ref then
+    local out = vim.fn.systemlist("git rev-parse --verify " .. vim.fn.shellescape(ref))
+    if vim.v.shell_error ~= 0 then
+      vim.notify("Invalid git ref: " .. ref, vim.log.levels.ERROR)
+      return false
+    end
+  end
+  M._base_ref = ref
+  return true
 end
 
 function M.find_repos()
@@ -24,59 +37,34 @@ function M.find_repos()
   return repos
 end
 
-function M.get_changed_files(repo_path)
-  local files = {}
-  local seen = {}
-
-  local staged = vim.fn.systemlist("git -C " .. vim.fn.shellescape(repo_path) .. " diff --cached --name-only")
-  for _, f in ipairs(staged) do
-    if f ~= "" and not seen[f] then
-      seen[f] = { staged = true, unstaged = false }
-      table.insert(files, f)
-    end
-  end
-
-  local unstaged = vim.fn.systemlist("git -C " .. vim.fn.shellescape(repo_path) .. " diff --name-only")
-  for _, f in ipairs(unstaged) do
-    if f ~= "" then
-      if seen[f] then
-        seen[f].unstaged = true
-      else
-        seen[f] = { staged = false, unstaged = true }
-        table.insert(files, f)
-      end
-    end
-  end
-
-  local result = {}
-  for _, f in ipairs(files) do
-    local s = seen[f]
-    local status = s.staged and s.unstaged and "SU" or s.staged and "S" or "U"
-    table.insert(result, { path = f, status = status, repo = repo_path })
-  end
-  return result
-end
-
--- Batch stats: one git call for all files in a repo
 function M.get_all_stats(repo_path)
   local stats = {}
   local cmd = "git -C " .. vim.fn.shellescape(repo_path)
-  local output = vim.fn.systemlist(cmd .. " diff --numstat")
-  local staged = vim.fn.systemlist(cmd .. " diff --cached --numstat")
-  for _, line in ipairs(output) do
-    local a, r, f = line:match("^(%d+)%s+(%d+)%s+(.+)$")
-    if a then
-      stats[f] = stats[f] or { added = 0, removed = 0 }
-      stats[f].added = stats[f].added + tonumber(a)
-      stats[f].removed = stats[f].removed + tonumber(r)
+
+  if M._base_ref then
+    local output = vim.fn.systemlist(cmd .. " diff --numstat " .. vim.fn.shellescape(M._base_ref))
+    if vim.v.shell_error ~= 0 then return stats end
+    for _, line in ipairs(output) do
+      local a, r, f = line:match("^(%d+)%s+(%d+)%s+(.+)$")
+      if a then
+        stats[f] = stats[f] or { added = 0, removed = 0 }
+        stats[f].added = stats[f].added + tonumber(a)
+        stats[f].removed = stats[f].removed + tonumber(r)
+      end
     end
-  end
-  for _, line in ipairs(staged) do
-    local a, r, f = line:match("^(%d+)%s+(%d+)%s+(.+)$")
-    if a then
-      stats[f] = stats[f] or { added = 0, removed = 0 }
-      stats[f].added = stats[f].added + tonumber(a)
-      stats[f].removed = stats[f].removed + tonumber(r)
+  else
+    local output = vim.fn.systemlist(cmd .. " diff --numstat HEAD")
+    if vim.v.shell_error ~= 0 then
+      -- Fallback for repos with no commits
+      output = vim.fn.systemlist(cmd .. " diff --numstat")
+    end
+    for _, line in ipairs(output) do
+      local a, r, f = line:match("^(%d+)%s+(%d+)%s+(.+)$")
+      if a then
+        stats[f] = stats[f] or { added = 0, removed = 0 }
+        stats[f].added = stats[f].added + tonumber(a)
+        stats[f].removed = stats[f].removed + tonumber(r)
+      end
     end
   end
   return stats
@@ -87,7 +75,6 @@ function M.get_file_stats(filepath, repo_path)
   if M._cache[key] then
     return M._cache[key].added, M._cache[key].removed
   end
-  -- Populate cache for all files in this repo at once
   local all = M.get_all_stats(repo_path)
   for f, s in pairs(all) do
     M._cache[repo_path .. ":" .. f .. ":stats"] = s
@@ -105,10 +92,22 @@ function M.get_hunks(filepath, repo_path)
 
   local cmd = "git -C " .. vim.fn.shellescape(repo_path)
   local hunks = {}
-  local output = vim.fn.systemlist(cmd .. " diff -U0 -- " .. vim.fn.shellescape(filepath))
-  local staged = vim.fn.systemlist(cmd .. " diff --cached -U0 -- " .. vim.fn.shellescape(filepath))
-  for _, line in ipairs(staged) do
-    table.insert(output, line)
+  local output
+
+  if M._base_ref then
+    output = vim.fn.systemlist(cmd .. " diff -U0 " .. vim.fn.shellescape(M._base_ref) .. " -- " .. vim.fn.shellescape(filepath))
+  else
+    -- Use diff HEAD to combine staged+unstaged without duplicates
+    output = vim.fn.systemlist(cmd .. " diff -U0 HEAD -- " .. vim.fn.shellescape(filepath))
+    if vim.v.shell_error ~= 0 then
+      -- Fallback for new repos or untracked files
+      output = vim.fn.systemlist(cmd .. " diff -U0 -- " .. vim.fn.shellescape(filepath))
+    end
+  end
+
+  if vim.v.shell_error ~= 0 then
+    M._cache[key] = hunks
+    return hunks
   end
 
   for _, line in ipairs(output) do
@@ -133,40 +132,50 @@ function M.load_all_repos(repos)
   local jobs = {}
   for _, repo in ipairs(repos) do
     local rp = repo.path
-    -- 4 commands per repo, launched in parallel
-    table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--cached", "--name-only" }, repo = rp, kind = "staged" })
-    table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-only" }, repo = rp, kind = "unstaged" })
-    table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--numstat" }, repo = rp, kind = "numstat" })
-    table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--cached", "--numstat" }, repo = rp, kind = "numstat_staged" })
+    if M._base_ref then
+      table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-only", M._base_ref }, repo = rp, kind = "branch_files" })
+      table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--numstat", M._base_ref }, repo = rp, kind = "numstat" })
+    else
+      table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-only", "HEAD" }, repo = rp, kind = "changed" })
+      table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--numstat", "HEAD" }, repo = rp, kind = "numstat" })
+      table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--cached", "--name-only" }, repo = rp, kind = "staged" })
+      table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-only" }, repo = rp, kind = "unstaged" })
+      local cfg = require("code_review.config").current
+      if cfg.show_untracked then
+        table.insert(jobs, { cmd = { "git", "-C", rp, "ls-files", "--others", "--exclude-standard" }, repo = rp, kind = "untracked" })
+      end
+    end
   end
 
-  -- Launch all
   local handles = {}
   for i, job in ipairs(jobs) do
     handles[i] = vim.system(job.cmd)
   end
 
-  -- Collect results
   local results = {}
   for i, handle in ipairs(handles) do
     local out = handle:wait()
-    results[i] = { lines = vim.split(out.stdout or "", "\n", { trimempty = true }), job = jobs[i] }
+    results[i] = { lines = vim.split(out.stdout or "", "\n", { trimempty = true }), job = jobs[i], code = out.code }
   end
 
-  -- Process into files and stats
   local all_files = {}
   for _, repo in ipairs(repos) do
     local rp = repo.path
-    local staged_files = {}
-    local unstaged_files = {}
+    local changed_files, staged_files, unstaged_files, untracked_files, branch_files = {}, {}, {}, {}, {}
     local repo_stats = {}
 
     for _, r in ipairs(results) do
-      if r.job.repo == rp then
-        if r.job.kind == "staged" then
+      if r.job.repo == rp and r.code == 0 then
+        if r.job.kind == "changed" then
+          changed_files = r.lines
+        elseif r.job.kind == "staged" then
           staged_files = r.lines
         elseif r.job.kind == "unstaged" then
           unstaged_files = r.lines
+        elseif r.job.kind == "untracked" then
+          untracked_files = r.lines
+        elseif r.job.kind == "branch_files" then
+          branch_files = r.lines
         elseif r.job.kind == "numstat" then
           for _, line in ipairs(r.lines) do
             local a, rm, f = line:match("^(%d+)%s+(%d+)%s+(.+)$")
@@ -176,46 +185,52 @@ function M.load_all_repos(repos)
               repo_stats[f].removed = repo_stats[f].removed + tonumber(rm)
             end
           end
-        elseif r.job.kind == "numstat_staged" then
-          for _, line in ipairs(r.lines) do
-            local a, rm, f = line:match("^(%d+)%s+(%d+)%s+(.+)$")
-            if a then
-              repo_stats[f] = repo_stats[f] or { added = 0, removed = 0 }
-              repo_stats[f].added = repo_stats[f].added + tonumber(a)
-              repo_stats[f].removed = repo_stats[f].removed + tonumber(rm)
-            end
+        end
+      end
+    end
+
+    if M._base_ref then
+      local seen = {}
+      for _, f in ipairs(branch_files) do
+        if f ~= "" and not seen[f] then
+          seen[f] = true
+          table.insert(all_files, { path = f, status = "M", repo = rp })
+          M._cache[rp .. ":" .. f .. ":stats"] = repo_stats[f] or { added = 0, removed = 0 }
+        end
+      end
+    else
+      -- Determine status per file using staged/unstaged info
+      local staged_set = {}
+      for _, f in ipairs(staged_files) do staged_set[f] = true end
+      local unstaged_set = {}
+      for _, f in ipairs(unstaged_files) do unstaged_set[f] = true end
+
+      local seen = {}
+      -- Changed files (combined staged+unstaged from diff HEAD)
+      for _, f in ipairs(changed_files) do
+        if f ~= "" and not seen[f] then
+          seen[f] = true
+          local status
+          if staged_set[f] and unstaged_set[f] then
+            status = "SU"
+          elseif staged_set[f] then
+            status = "S"
+          else
+            status = "U"
           end
+          table.insert(all_files, { path = f, status = status, repo = rp })
+          M._cache[rp .. ":" .. f .. ":stats"] = repo_stats[f] or { added = 0, removed = 0 }
         end
       end
-    end
 
-    -- Build file entries
-    local seen = {}
-    local files = {}
-    for _, f in ipairs(staged_files) do
-      if f ~= "" and not seen[f] then
-        seen[f] = { staged = true, unstaged = false }
-        table.insert(files, f)
-      end
-    end
-    for _, f in ipairs(unstaged_files) do
-      if f ~= "" then
-        if seen[f] then
-          seen[f].unstaged = true
-        else
-          seen[f] = { staged = false, unstaged = true }
-          table.insert(files, f)
+      -- Untracked files
+      for _, f in ipairs(untracked_files) do
+        if f ~= "" and not seen[f] then
+          seen[f] = true
+          table.insert(all_files, { path = f, status = "N", repo = rp })
+          M._cache[rp .. ":" .. f .. ":stats"] = { added = 0, removed = 0 }
         end
       end
-    end
-
-    for _, f in ipairs(files) do
-      local s = seen[f]
-      local status = s.staged and s.unstaged and "SU" or s.staged and "S" or "U"
-      table.insert(all_files, { path = f, status = status, repo = rp })
-      -- Cache stats
-      local st = repo_stats[f] or { added = 0, removed = 0 }
-      M._cache[rp .. ":" .. f .. ":stats"] = st
     end
   end
 

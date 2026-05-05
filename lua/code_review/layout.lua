@@ -22,7 +22,8 @@ function M.open()
   vim.b[M.state.viewer_buf].lsp_disabled = true
 
   -- Bottom pane: browser
-  vim.cmd("botright 12split")
+  local config = require("code_review.config")
+  vim.cmd("botright " .. config.current.browser_height .. "split")
   M.state.browser_buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_set_current_buf(M.state.browser_buf)
   M.state.browser_win = vim.api.nvim_get_current_win()
