@@ -48,6 +48,18 @@ function M.setup(opts)
     require("code_review").setup(config.current)
     vim.notify("CodeReview reloaded", vim.log.levels.INFO)
   end, {})
+
+  -- Save session on nvim exit
+  vim.api.nvim_create_autocmd("VimLeavePre", {
+    group = vim.api.nvim_create_augroup("CodeReviewSave", { clear = true }),
+    callback = function()
+      local s = require("code_review.state")
+      local files = s.get("files")
+      if files and #files > 0 then
+        require("code_review.session").save()
+      end
+    end,
+  })
 end
 
 function M._setup_keymaps()
@@ -153,16 +165,6 @@ function M.open(base_ref)
       callback = try_refresh,
     })
   end
-
-  -- Save session on nvim exit
-  vim.api.nvim_create_autocmd("VimLeavePre", {
-    group = vim.api.nvim_create_augroup("CodeReviewSave", { clear = true }),
-    callback = function()
-      if layout.state.tab and vim.api.nvim_tabpage_is_valid(layout.state.tab) then
-        session.save()
-      end
-    end,
-  })
 end
 
 function M.refresh()
@@ -378,8 +380,18 @@ function M.reverse_advance()
     end
   end
 
-  -- At or before first hunk — go to previous file
+  -- At or before first hunk — go to last hunk of previous file
   M.prev_file()
+  local new_entry = files[state.get("current_idx")]
+  if new_entry then
+    local new_hunks = git.get_hunks(new_entry.path, new_entry.repo)
+    if #new_hunks > 0 then
+      local line_count = vim.api.nvim_buf_line_count(s.viewer_buf)
+      local target = math.max(1, math.min(new_hunks[#new_hunks].start, line_count))
+      vim.api.nvim_win_set_cursor(s.viewer_win, { target, 0 })
+      vim.api.nvim_win_call(s.viewer_win, function() vim.cmd("normal! zz") end)
+    end
+  end
 end
 
 function M.close()

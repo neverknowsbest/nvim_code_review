@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.6.0 (2026-05-06)
+
+### Features
+- Collapsible repo sections in file browser (`<CR>` on repo header toggles)
+- Deleted files shown as `[UD]` status in both uncommitted and branch-diff modes
+- Right-justified stats with aligned columns in both browser and log
+- File paths truncated from left (keeps filename visible)
+- Commit messages truncated from right (keeps start visible)
+- Collapsed repo state persisted in session
+
+### Bug Fixes
+- Fixed UTF-8 corruption in path/commit truncation (uses `strcharpart`)
+- Fixed collapsed state hiding files in single-repo mode (guard with `multi`)
+- Fixed `count_file_lines` crash on directories ("Is a directory" error)
+- Fixed session not saving on `:qa` (VimLeavePre guard was too strict)
+- Fixed `VimLeavePre` loading modules unnecessarily when plugin unused
+- Fixed `stat_width` using byte length instead of display width
+- Fixed hard-coded `r` in browser cheatsheet (now uses config key)
+- Made collapse toggle logic explicit for readability
+
 ## v0.5.0 (2026-05-06)
 
 ### Features

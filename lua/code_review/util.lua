@@ -1,7 +1,7 @@
 local M = {}
 
 function M.format_stat(files, added, removed)
-  return string.format("%-3sf  +%-4s -%s", files, added, removed)
+  return string.format("%-3sf  +%-4s -%-4s", files, added, removed)
 end
 
 function M.apply_stat_highlights(buf, ns, lines, start_line)

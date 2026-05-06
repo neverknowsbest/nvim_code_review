@@ -168,28 +168,25 @@ function M.refresh()
     end
   end
 
-  -- Find max prefix width for alignment, capped to leave room for stats
-  local stat_width = 20
+  -- Right-justify stats, truncate commit messages from the right
   local log_width = vim.api.nvim_win_get_width(M._win)
-  local max_allowed = log_width - stat_width - 4
-  local max_prefix = 0
-  for _, e in ipairs(entries) do
-    local w = vim.fn.strdisplaywidth(e.prefix)
-    if w > max_prefix then max_prefix = w end
-  end
-  max_prefix = math.min(max_prefix, max_allowed)
 
   for _, e in ipairs(entries) do
+    local stat = util.format_stat(e.files, e.ins, e.del)
+    local stat_width = vim.fn.strdisplaywidth(stat)
+    local available = log_width - stat_width - 1
     local prefix = e.prefix
-    if vim.fn.strdisplaywidth(prefix) > max_prefix then
-      -- Truncate with ellipsis
-      while vim.fn.strdisplaywidth(prefix) > max_prefix - 1 and #prefix > 0 do
-        prefix = prefix:sub(1, #prefix - 1)
+
+    -- Truncate from the right to keep start of message visible
+    if vim.fn.strdisplaywidth(prefix) > available then
+      while vim.fn.strdisplaywidth(prefix) > available - 1 and vim.fn.strchars(prefix) > 1 do
+        prefix = vim.fn.strcharpart(prefix, 0, vim.fn.strchars(prefix) - 1)
       end
       prefix = prefix .. "…"
     end
-    local pad = string.rep(" ", math.max(0, max_prefix - vim.fn.strdisplaywidth(prefix) + 2))
-    table.insert(display, prefix .. pad .. util.format_stat(e.files, e.ins, e.del))
+
+    local pad = string.rep(" ", math.max(1, log_width - vim.fn.strdisplaywidth(prefix) - stat_width))
+    table.insert(display, prefix .. pad .. stat)
   end
 
   vim.bo[M._buf].modifiable = true

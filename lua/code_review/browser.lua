@@ -35,28 +35,39 @@ local function get_icon(filepath)
   return (icon or "") .. " "
 end
 
-local function format_file_line(entry, stats, viewed_hunks, idx, max_name_len)
-  local icon = get_icon(entry.path)
-  local prefix = string.format("  [%s] %s%s", entry.status, icon, entry.path)
-  local display_width = vim.fn.strdisplaywidth(prefix)
-  local pad = string.rep(" ", math.max(0, max_name_len - display_width + 2))
+local function format_stat_str(stats, viewed_hunks, idx)
   local seen = viewed_hunks[idx] and vim.tbl_count(viewed_hunks[idx]) or 0
   local total = stats and stats.chunks
   if total then seen = math.min(seen, total) end
   local chunk_str = total and string.format("%d/%d", seen, total) or "-"
-  local stat_str = string.format("%-5s h  +%-4d -%-4d", chunk_str, stats and stats.added or 0, stats and stats.removed or 0)
-  return prefix .. pad .. stat_str
+  return string.format("%-5s h  +%-4d -%-4d", chunk_str, stats and stats.added or 0, stats and stats.removed or 0)
 end
 
-local function calc_max_name_len(file_entries)
-  local max = 0
-  for _, entry in ipairs(file_entries) do
-    local icon = get_icon(entry.path)
-    local prefix = string.format("  [%s] %s%s", entry.status, icon, entry.path)
-    local w = vim.fn.strdisplaywidth(prefix)
-    if w > max then max = w end
+local function format_file_line(entry, stats, viewed_hunks, idx, available_width)
+  local icon = get_icon(entry.path)
+  local stat = format_stat_str(stats, viewed_hunks, idx)
+  local stat_width = vim.fn.strdisplaywidth(stat)
+
+  -- Build prefix: [status] icon path
+  local status_prefix = string.format("  [%s] %s", entry.status, icon)
+  local prefix_width = vim.fn.strdisplaywidth(status_prefix)
+  local path = entry.path
+
+  -- Available space for path = total width - prefix - stat - padding
+  local path_space = available_width - prefix_width - stat_width - 2
+  if path_space < 4 then path_space = 4 end
+
+  -- Truncate path from the LEFT to keep filename visible
+  if vim.fn.strdisplaywidth(path) > path_space then
+    while vim.fn.strdisplaywidth(path) > path_space - 1 and vim.fn.strchars(path) > 1 do
+      path = vim.fn.strcharpart(path, 1)
+    end
+    path = "…" .. path
   end
-  return max
+
+  local path_display = path
+  local pad = string.rep(" ", math.max(1, available_width - prefix_width - vim.fn.strdisplaywidth(path_display) - stat_width))
+  return status_prefix .. path_display .. pad .. stat
 end
 
 local function build_header(file_count, repos, total_added, total_removed)
@@ -120,24 +131,31 @@ local function sum_stats(stats)
   return added, removed
 end
 
-local function build_file_list(files, stats, viewed_hunks, repos, max_name_len)
+local function build_file_list(files, stats, viewed_hunks, repos, available_width)
   local display = {}
   local line_map = {}
   local idx_to_line = {}
+  local repo_line_map = {}  -- line -> repo_path (for collapse toggle)
   local multi = #repos > 1
   local current_repo = nil
+  local collapsed = state.get("collapsed_repos")
 
   for i, entry in ipairs(files) do
     if multi and entry.repo ~= current_repo then
       current_repo = entry.repo
-      table.insert(display, " ┌ " .. vim.fn.fnamemodify(entry.repo, ":t") .. "/")
+      local name = vim.fn.fnamemodify(entry.repo, ":t")
+      local marker = collapsed[entry.repo] and " ▶ " or " ┌ "
+      table.insert(display, marker .. name .. "/")
+      repo_line_map[#display] = entry.repo
     end
-    table.insert(display, format_file_line(entry, stats[i], viewed_hunks, i, max_name_len))
-    line_map[#display] = i
-    idx_to_line[i] = #display
+    if not multi or not collapsed[entry.repo] then
+      table.insert(display, format_file_line(entry, stats[i], viewed_hunks, i, available_width))
+      line_map[#display] = i
+      idx_to_line[i] = #display
+    end
   end
 
-  return display, line_map, idx_to_line
+  return display, line_map, idx_to_line, repo_line_map
 end
 
 function M._setup_keymaps(buf)
@@ -169,13 +187,14 @@ function M.render()
   local header = build_header(#files, repos, total_added, total_removed)
   vim.wo[s.browser_win].winbar = header
 
-  local max_name_len = calc_max_name_len(files)
-  local display, line_map, idx_to_line = build_file_list(files, stats, viewed_hunks, repos, max_name_len)
+  local available_width = vim.api.nvim_win_get_width(s.browser_win)
+  local display, line_map, idx_to_line, repo_line_map = build_file_list(files, stats, viewed_hunks, repos, available_width)
 
   M._line_map = line_map
   M._idx_to_line = idx_to_line
+  M._repo_line_map = repo_line_map
   M._header_lines = 0
-  M._max_name_len = max_name_len
+  M._max_name_len = available_width
 
   vim.bo[s.browser_buf].modifiable = true
   vim.api.nvim_buf_set_lines(s.browser_buf, 0, -1, false, display)
@@ -256,7 +275,23 @@ function M.select()
     return
   end
   local cursor = vim.api.nvim_win_get_cursor(s.browser_win)
-  local idx = M._line_map and M._line_map[cursor[1]]
+  local line = cursor[1]
+
+  -- Check if this is a repo header line (toggle collapse)
+  if M._repo_line_map and M._repo_line_map[line] then
+    local repo_path = M._repo_line_map[line]
+    local collapsed = state.get("collapsed_repos")
+    if collapsed[repo_path] then
+      collapsed[repo_path] = nil
+    else
+      collapsed[repo_path] = true
+    end
+    M.render()
+    schedule_highlight()
+    return
+  end
+
+  local idx = M._line_map and M._line_map[line]
   local files = state.get("files")
   if idx and idx >= 1 and idx <= #files then
     state.data.current_idx = idx

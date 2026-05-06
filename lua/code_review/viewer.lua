@@ -35,7 +35,7 @@ local function read_file_from_disk(repo_path, filepath)
       return { "-- Error reading file: " .. (err or filepath) }
     end
   else
-    return { "-- Unable to read file: " .. filepath }
+    return { "-- Deleted file: " .. filepath }
   end
   return lines
 end

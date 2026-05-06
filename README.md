@@ -143,17 +143,18 @@ require("code_review").setup({
  5 files changed across 2 repos  +62 -23       <CR>: advance  d: diff  ...
 ──────────────────────────────────────────────────────────────────────────────────
  ┌ service-a/
-  [U]  src/handler.lua       2/3     hunks  +20   -5
-  [S]  src/utils.lua         0/1     hunks  +8    -3
- ┌ service-b/
-  [CU] lib/client.ts         1/4     hunks  +30   -10
-  [N]  new_file.ts           0/0     hunks  +0    -0
+  [U]  src/handler.lua              2/3 h  +20  -5
+  [S]  src/utils.lua                0/1 h  +8   -3
+ ▶ service-b/
 ```
 
-- `[S]` staged, `[U]` unstaged, `[SU]` both, `[N]` new/untracked
+- `[S]` staged, `[U]` unstaged, `[SU]` both, `[N]` new/untracked, `[UD]` deleted
 - `[C]` committed, `[CU]` committed + uncommitted changes
+- `<CR>` on a repo header collapses/expands that repo's files
 - Hunk progress updates as you navigate hunks
 - Viewed files are dimmed; current file is highlighted
+- File paths truncated from left to fit window (keeps filename visible)
+- Stats right-justified with aligned columns
 - File type icons shown if nvim-web-devicons is installed
 
 ## Git log panel

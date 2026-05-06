@@ -56,6 +56,7 @@ local function normalize_data(data)
   data.viewed = normalize_nil(data.viewed)
   data.viewed_hunks = normalize_nil(data.viewed_hunks)
   data.files = normalize_nil(data.files)
+  data.collapsed_repos = normalize_nil(data.collapsed_repos)
   return data
 end
 
@@ -153,6 +154,7 @@ function M.save()
     current_idx = state.get("current_idx"),
     viewed = stringify_keys(state.get("viewed")),
     viewed_hunks = stringify_nested_keys(state.get("viewed_hunks")),
+    collapsed_repos = state.get("collapsed_repos"),
     files = build_file_keys(files),
     base_ref = git._base_ref,
     repo_refs = build_repo_refs(git),
@@ -194,6 +196,12 @@ function M.restore()
   restore_hunks(files, data, path_index, state.get("viewed"), state.get("viewed_hunks"), state.get("stats"), git)
   restore_viewed(files, data, path_index, state.get("viewed"))
   restore_position(data, files, data.files, state)
+
+  -- Restore collapsed repos
+  local saved_collapsed = data.collapsed_repos
+  if saved_collapsed and saved_collapsed ~= vim.NIL then
+    state.data.collapsed_repos = saved_collapsed
+  end
 end
 
 function M.clear()
