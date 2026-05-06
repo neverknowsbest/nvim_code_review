@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.5.0 (2026-05-06)
+
+### Features
+- Central state store (`state.lua`) with pub/sub infrastructure
+- Reactive highlights via `schedule_highlight()` — no more manual wiring
+- Floating winbar headers for file browser and git log (always visible)
+- Winbar highlights: shaded background, bold numbers, colored +/-
+- `g?` keyboard shortcuts modal
+- `<S-CR>` reverse advance (previous hunk or previous file)
+- `<S-Tab>` previous file in viewer, previous repo in log
+- `m`/`M` now toggle viewed status
+- Background async hunk loading with progress display
+- Session stored in `~/.local/state/nvim/code_review/` (per-project hash)
+- Session scoped by git ref — detects scope changes, partial restore on mismatch
+- Single-commit mode clears viewed state on commit switch
+- `VimLeavePre` autocmd saves session on `:qa`
+
+### Bug Fixes
+- Fixed stack overflow in async hunk loader (synchronous recursion)
+- Fixed listener leak on re-open (state.reset clears listeners)
+- Fixed `diff_active` set before diff window created
+- Fixed `show_help` crash in headless nvim
+- Fixed floating windows (LSP hover) persisting after leaving edit mode
+- Fixed session not saving (wrong cwd, vim.NIL comparison)
+- Fixed log `win_width` nil after winbar migration
+- Fixed browser `line_for_idx` inconsistent fallback
+- Removed dead highlight code in `update_file_line`
+
+### Code Quality
+- Separated highlight namespaces (`ns_hl` vs `ns_stats`) to prevent interference
+- Session path normalized with `vim.fn.resolve()` for symlink consistency
+- TOCTOU guard in async loader (re-checks generation)
+- Removed header lines from buffer (winbar handles it)
+
 ## v0.4.0 (2026-05-05)
 
 ### Features

@@ -24,6 +24,8 @@ M.defaults = {
     mark_file = "m",
     mark_all = "M",
     mark_and_next = "<Tab>",
+    reverse_advance = "<S-CR>",
+    prev_file_alt = "<S-Tab>",
     quit = "q",
   },
 }

@@ -1,39 +1,162 @@
 local M = {}
 
-local SESSION_FILE = ".code_review_session.json"
+local SESSION_DIR = vim.fn.stdpath("state") .. "/code_review"
 
 function M.path()
-  return vim.fn.getcwd() .. "/" .. SESSION_FILE
+  local cwd = vim.fn.resolve(vim.fn.getcwd())
+  local hash = vim.fn.sha256(cwd):sub(1, 12)
+  vim.fn.mkdir(SESSION_DIR, "p")
+  return SESSION_DIR .. "/" .. hash .. ".json"
 end
 
-function M.save(browser)
+-- Serialization helpers
+
+local function stringify_keys(tbl)
+  local out = {}
+  for k, v in pairs(tbl) do
+    out[tostring(k)] = v
+  end
+  return out
+end
+
+local function stringify_nested_keys(tbl)
+  local out = {}
+  for file_idx, hunks in pairs(tbl) do
+    out[tostring(file_idx)] = stringify_keys(hunks)
+  end
+  return out
+end
+
+local function build_file_keys(files)
+  local keys = {}
+  for i, entry in ipairs(files) do
+    keys[i] = entry.repo .. ":" .. entry.path
+  end
+  return keys
+end
+
+local function build_repo_refs(git)
+  local refs = {}
+  for repo_path, ref_data in pairs(git._repo_refs) do
+    refs[repo_path] = ref_data.base
+  end
+  return refs
+end
+
+-- Deserialization helpers
+
+local function normalize_nil(val)
+  if val == vim.NIL then return nil end
+  return val
+end
+
+local function normalize_data(data)
+  data.base_ref = normalize_nil(data.base_ref)
+  data.repo_refs = normalize_nil(data.repo_refs)
+  data.viewed = normalize_nil(data.viewed)
+  data.viewed_hunks = normalize_nil(data.viewed_hunks)
+  data.files = normalize_nil(data.files)
+  return data
+end
+
+local function build_path_index(saved_files)
+  local index = {}
+  for i, key in ipairs(saved_files or {}) do
+    index[key] = i
+  end
+  return index
+end
+
+-- Ref matching
+
+local function refs_match(data, git)
+  if data.base_ref ~= git._base_ref then return false end
+  local saved = data.repo_refs or {}
+  for repo_path, saved_ref in pairs(saved) do
+    local current = git._repo_refs[repo_path]
+    if saved_ref ~= (current and current.base) then return false end
+  end
+  for repo_path, ref_data in pairs(git._repo_refs) do
+    if not saved[repo_path] and ref_data.base then return false end
+  end
+  return true
+end
+
+-- Restore helpers
+
+local function restore_viewed(files, data, path_index, viewed)
+  if not data.viewed then return end
+  for i, entry in ipairs(files) do
+    local key = entry.repo .. ":" .. entry.path
+    local saved_idx = path_index[key]
+    if saved_idx and data.viewed[tostring(saved_idx)] then
+      viewed[i] = true
+    end
+  end
+end
+
+local function restore_hunks(files, data, path_index, viewed, viewed_hunks, stats, git)
+  if not data.viewed_hunks then return end
+  for i, entry in ipairs(files) do
+    local key = entry.repo .. ":" .. entry.path
+    local saved_idx = path_index[key]
+    if not saved_idx then goto continue end
+
+    if data.viewed and data.viewed[tostring(saved_idx)] then
+      viewed[i] = true
+    end
+
+    local saved = data.viewed_hunks[tostring(saved_idx)]
+    if saved then
+      local hunks = git.get_hunks(entry.path, entry.repo)
+      local valid_starts = {}
+      for _, h in ipairs(hunks) do valid_starts[h.start] = true end
+
+      viewed_hunks[i] = {}
+      for k, v in pairs(saved) do
+        local num = tonumber(k)
+        if num and valid_starts[num] then
+          viewed_hunks[i][num] = v
+        end
+      end
+
+      if stats[i] and not stats[i].chunks then
+        stats[i].chunks = #hunks
+      end
+    end
+
+    ::continue::
+  end
+end
+
+local function restore_position(data, files, saved_files, state)
+  if not data.current_idx or data.current_idx > #files then return end
+  local saved_key = (saved_files or {})[data.current_idx]
+  local entry = files[data.current_idx]
+  if entry and saved_key == (entry.repo .. ":" .. entry.path) then
+    state.data.current_idx = data.current_idx
+  end
+end
+
+-- Public API
+
+function M.save()
   local config = require("code_review.config")
   if not config.current.persist_session then return end
 
-  -- Convert sparse numeric keys to string keys for JSON compatibility
-  local viewed = {}
-  for k, v in pairs(browser.viewed) do
-    viewed[tostring(k)] = v
-  end
-
-  local viewed_hunks = {}
-  for file_idx, hunks in pairs(browser.viewed_hunks) do
-    local h = {}
-    for line_num, v in pairs(hunks) do
-      h[tostring(line_num)] = v
-    end
-    viewed_hunks[tostring(file_idx)] = h
-  end
+  local state = require("code_review.state")
+  local git = require("code_review.git")
+  local files = state.get("files")
+  if not files or #files == 0 then return end
 
   local data = {
-    current_idx = browser.current_idx,
-    viewed = viewed,
-    viewed_hunks = viewed_hunks,
-    files = {},
+    current_idx = state.get("current_idx"),
+    viewed = stringify_keys(state.get("viewed")),
+    viewed_hunks = stringify_nested_keys(state.get("viewed_hunks")),
+    files = build_file_keys(files),
+    base_ref = git._base_ref,
+    repo_refs = build_repo_refs(git),
   }
-  for i, entry in ipairs(browser.files) do
-    data.files[i] = entry.repo .. ":" .. entry.path
-  end
 
   local json = vim.fn.json_encode(data)
   local f, err = io.open(M.path(), "w")
@@ -45,7 +168,7 @@ function M.save(browser)
   end
 end
 
-function M.restore(browser)
+function M.restore()
   local config = require("code_review.config")
   if not config.current.persist_session then return end
 
@@ -56,48 +179,21 @@ function M.restore(browser)
 
   local ok, data = pcall(vim.fn.json_decode, content)
   if not ok or not data then return end
+  data = normalize_data(data)
 
-  -- Build lookup of saved file keys
-  local saved_files = data.files or {}
+  local state = require("code_review.state")
+  local git = require("code_review.git")
+  local files = state.get("files")
+  local path_index = build_path_index(data.files)
 
-  -- Match saved state to current file list by path
-  local path_to_saved_idx = {}
-  for i, key in ipairs(saved_files) do
-    path_to_saved_idx[key] = i
+  if not refs_match(data, git) then
+    restore_viewed(files, data, path_index, state.get("viewed"))
+    return
   end
 
-  -- Restore viewed and viewed_hunks by matching paths
-  for i, entry in ipairs(browser.files) do
-    local key = entry.repo .. ":" .. entry.path
-    local saved_idx = path_to_saved_idx[key]
-    if saved_idx then
-      if data.viewed and data.viewed[tostring(saved_idx)] then
-        browser.viewed[i] = true
-      end
-      if data.viewed_hunks and data.viewed_hunks[tostring(saved_idx)] then
-        browser.viewed_hunks[i] = {}
-        for k, v in pairs(data.viewed_hunks[tostring(saved_idx)]) do
-          browser.viewed_hunks[i][tonumber(k)] = v
-        end
-        -- Fill chunk count from viewed hunks count as minimum
-        if browser.stats[i] and not browser.stats[i].chunks then
-          local git = require("code_review.git")
-          local hunks = git.get_hunks(entry.path, entry.repo)
-          browser.stats[i].chunks = #hunks
-        end
-      end
-    end
-  end
-
-  -- Restore position (only if file at that index matches)
-  if data.current_idx and data.current_idx <= #browser.files then
-    local saved_key = saved_files[data.current_idx]
-    local entry = browser.files[data.current_idx]
-    local actual_key = entry and (entry.repo .. ":" .. entry.path)
-    if saved_key == actual_key then
-      browser.current_idx = data.current_idx
-    end
-  end
+  restore_hunks(files, data, path_index, state.get("viewed"), state.get("viewed_hunks"), state.get("stats"), git)
+  restore_viewed(files, data, path_index, state.get("viewed"))
+  restore_position(data, files, data.files, state)
 end
 
 function M.clear()

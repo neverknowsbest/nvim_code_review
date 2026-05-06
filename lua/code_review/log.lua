@@ -21,11 +21,11 @@ function M.toggle()
   if M.is_open() then
     M.close()
     local browser = require("code_review.browser")
-    browser.refresh_display()
+    browser.render()
   else
     M.open()
     local browser = require("code_review.browser")
-    browser.refresh_display()
+    browser.render()
   end
 end
 
@@ -63,6 +63,7 @@ function M.open()
     vim.keymap.set("n", "<CR>", function() M.select() end, opts)
     vim.keymap.set("n", "s", function() M.toggle_mode() end, opts)
     vim.keymap.set("n", "<Tab>", function() M.cycle_repo() end, opts)
+    vim.keymap.set("n", "<S-Tab>", function() M.cycle_repo_back() end, opts)
     vim.keymap.set("n", "q", function() require("code_review").close() end, opts)
     util.set_nav_keymaps(M._buf)
     M._keymaps_set = true
@@ -71,6 +72,9 @@ function M.open()
   -- Focus log panel
   vim.api.nvim_set_current_win(M._win)
 end
+
+-- Alias for opening without triggering browser re-render
+M.open_panel = M.open
 
 function M.close()
   if M._win and vim.api.nvim_win_is_valid(M._win) then
@@ -125,18 +129,11 @@ function M.refresh()
   local repo_label = #repos > 1
     and string.format(" %s (%d/%d)", repos[M._repo_idx].name, M._repo_idx, #repos)
     or ""
-  local left = " Git Log " .. mode_label .. repo_label
+  local left = "%#CodeReviewBar# %#CodeReviewBarBold#Git Log%#CodeReviewBar# " .. mode_label .. repo_label
   local right = #repos > 1
     and "<CR>: select  <Tab>: repo  s: mode  q: close "
     or "<CR>: select  s: mode  q: close "
-  local win_width = vim.api.nvim_win_get_width(M._win)
-  local remaining = win_width - #left
-  if remaining > #right + 2 then
-    table.insert(display, left .. string.rep(" ", remaining - #right) .. right)
-  else
-    table.insert(display, left)
-  end
-  table.insert(display, string.rep("─", win_width))
+  vim.wo[M._win].winbar = left .. "%=%#CodeReviewBar#" .. right
 
   local util = require("code_review.util")
 
@@ -172,8 +169,9 @@ function M.refresh()
   end
 
   -- Find max prefix width for alignment, capped to leave room for stats
-  local stat_width = 20  -- approximate width of "3f   +42   -10"
-  local max_allowed = win_width - stat_width - 4
+  local stat_width = 20
+  local log_width = vim.api.nvim_win_get_width(M._win)
+  local max_allowed = log_width - stat_width - 4
   local max_prefix = 0
   for _, e in ipairs(entries) do
     local w = vim.fn.strdisplaywidth(e.prefix)
@@ -219,12 +217,11 @@ function M._highlight()
   -- Highlight selected commits
   if M._selected > 0 then
     if M._single_commit_mode then
-      local line = M._selected + 2
+      local line = M._selected
       vim.api.nvim_buf_set_extmark(M._buf, ns, line - 1, 0, { line_hl_group = "CurSearch" })
     else
       for i = 1, M._selected do
-        local line = i + 2
-        vim.api.nvim_buf_set_extmark(M._buf, ns, line - 1, 0, { line_hl_group = "CurSearch" })
+        vim.api.nvim_buf_set_extmark(M._buf, ns, i - 1, 0, { line_hl_group = "CurSearch" })
       end
     end
   end
@@ -235,7 +232,7 @@ function M.select()
     return
   end
   local cursor = vim.api.nvim_win_get_cursor(M._win)
-  local idx = cursor[1] - 2 -- offset for header lines
+  local idx = cursor[1]  -- no header offset, winbar is separate
   if idx < 1 or idx > #M._commits then return end
 
   M._selected = idx
@@ -262,9 +259,14 @@ function M.select()
   end
 
   git.clear_cache()
+  -- In single-commit mode, clear viewed state since hunks are completely different per commit
+  local s = require("code_review.state")
+  if M._single_commit_mode then
+    s.data.viewed = {}
+    s.data.viewed_hunks = {}
+  end
   cr.refresh()
-  local browser = require("code_review.browser")
-  if #browser.files == 0 then
+  if #s.get("files") == 0 then
     vim.notify("No changes in selected range", vim.log.levels.INFO)
   end
 end
@@ -272,9 +274,6 @@ end
 function M.toggle_mode()
   M._single_commit_mode = not M._single_commit_mode
   M.refresh()
-  if M._selected > 0 then
-    M.select()
-  end
 end
 
 function M.cycle_repo()
@@ -282,7 +281,16 @@ function M.cycle_repo()
   if #repos <= 1 then return end
   M._repo_idx = M._repo_idx + 1
   if M._repo_idx > #repos then M._repo_idx = 1 end
-  M._selected = 0
+  M._selected = 1
+  M.refresh()
+end
+
+function M.cycle_repo_back()
+  local repos = git.find_repos()
+  if #repos <= 1 then return end
+  M._repo_idx = M._repo_idx - 1
+  if M._repo_idx < 1 then M._repo_idx = #repos end
+  M._selected = 1
   M.refresh()
 end
 

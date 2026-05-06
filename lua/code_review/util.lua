@@ -43,7 +43,8 @@ function M.set_nav_keymaps(buf)
   local opts = { buffer = buf, nowait = true, silent = true }
   vim.keymap.set("n", "gv", function()
     local viewer = require("code_review.viewer")
-    if viewer._editing then viewer.unedit() end
+    local s = require("code_review.state")
+    if s.data.editing then viewer.unedit() end
     local state = layout.state
     if state.viewer_win and vim.api.nvim_win_is_valid(state.viewer_win) then
       vim.api.nvim_set_current_win(state.viewer_win)

@@ -16,8 +16,11 @@ A Neovim plugin for reviewing git changes. Opens a dedicated tab with full synta
 - Progress tracking: viewed hunks per file, viewed file dimming
 - `<CR>` advance flow: walk through all changes with a single key (skips deleted files)
 - Parallel git loading for fast startup in multi-repo workspaces
-- Session persistence: resume reviews where you left off
+- Background async hunk loading (non-blocking)
+- Session persistence: resume reviews where you left off (scoped by git ref)
 - Auto-refresh on focus and tab switch
+- Floating winbar headers (always visible when scrolling)
+- `g?` keyboard shortcuts modal
 - Hot reload with `:CodeReviewReload` during development
 - Fully configurable keybindings, signs, and behavior
 
@@ -59,15 +62,18 @@ A Neovim plugin for reviewing git changes. Opens a dedicated tab with full synta
 | Key | Action |
 |-----|--------|
 | `<CR>` | Advance: next hunk, or mark file + next file at end |
+| `<S-CR>` | Reverse: previous hunk, or previous file |
 | `d` | Toggle side-by-side diff with base version |
 | `e` | Enter edit mode (open real file for editing) |
 | `]c` / `[c` | Next / previous hunk |
 | `]f` / `[f` | Next / previous file (skips deleted files) |
-| `m` | Mark current file as fully viewed |
-| `M` | Mark all files as viewed |
+| `m` | Toggle current file viewed |
+| `M` | Toggle all files viewed |
 | `<Tab>` | Mark current file as viewed + next file |
+| `<S-Tab>` | Previous file |
 | `L` | Toggle git log panel |
 | `r` | Refresh file list |
+| `g?` | Show keyboard shortcuts |
 | `q` | Close review |
 
 ### Edit mode
@@ -170,7 +176,7 @@ If your cwd is not a git repo, the plugin scans immediate subdirectories for `.g
 
 ## Session persistence
 
-Review progress (viewed files, viewed hunks, current position) is saved to `.code_review_session.json` in your cwd when you close the review. Re-opening `:CodeReview` restores your progress. Add this file to your `.gitignore`.
+Review progress (viewed files, viewed hunks, current position) is saved to `~/.local/state/nvim/code_review/` when you close the review or exit nvim. Re-opening `:CodeReview` restores your progress. Sessions are scoped by git ref — if you change which commits are selected, hunk-level progress resets while file-level viewed status is preserved.
 
 ## Requirements
 
