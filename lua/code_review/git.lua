@@ -163,11 +163,11 @@ function M.get_all_stats(repo_path)
 
   local output
   if has_base then
-    output = vim.fn.systemlist(cmd .. " diff --numstat " .. vim.fn.shellescape(diff_range))
+    output = vim.fn.systemlist(cmd .. " diff --no-renames --numstat " .. vim.fn.shellescape(diff_range))
   else
-    output = vim.fn.systemlist(cmd .. " diff --numstat HEAD")
+    output = vim.fn.systemlist(cmd .. " diff --no-renames --numstat HEAD")
     if vim.v.shell_error ~= 0 then
-      output = vim.fn.systemlist(cmd .. " diff --numstat")
+      output = vim.fn.systemlist(cmd .. " diff --no-renames --numstat")
     end
   end
 
@@ -221,18 +221,18 @@ local function build_jobs_for_repo(rp, skip_numstat)
 
   if base_ref then
     local diff_range = head_override and (base_ref .. ".." .. head_override) or base_ref
-    table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-status", diff_range }, repo = rp, kind = "name_status" })
+    table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--no-renames", "--name-status", diff_range }, repo = rp, kind = "name_status" })
     if not skip_numstat then
-      table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--numstat", diff_range }, repo = rp, kind = "numstat" })
+      table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--no-renames", "--numstat", diff_range }, repo = rp, kind = "numstat" })
       if not head_override then
-        table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-status", base_ref .. "..HEAD" }, repo = rp, kind = "committed_status" })
+        table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--no-renames", "--name-status", base_ref .. "..HEAD" }, repo = rp, kind = "committed_status" })
         table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-only", "HEAD" }, repo = rp, kind = "uncommitted" })
       end
     end
   else
-    table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-status", "HEAD" }, repo = rp, kind = "name_status" })
+    table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--no-renames", "--name-status", "HEAD" }, repo = rp, kind = "name_status" })
     if not skip_numstat then
-      table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--numstat", "HEAD" }, repo = rp, kind = "numstat" })
+      table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--no-renames", "--numstat", "HEAD" }, repo = rp, kind = "numstat" })
       table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--cached", "--name-only" }, repo = rp, kind = "staged" })
       table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-only" }, repo = rp, kind = "unstaged" })
     end
@@ -266,10 +266,8 @@ local function parse_name_status(lines)
   local files = {}
   local deleted = {}
   for _, line in ipairs(lines) do
-    local status, rest = line:match("^(%S+)\t(.+)$")
-    if status and rest then
-      -- Renames/copies: "R100\told\tnew" — use the new path
-      local path = rest:match("\t(.+)$") or rest
+    local status, path = line:match("^(%S)\t(.+)$")
+    if status and path then
       table.insert(files, path)
       if status == "D" then deleted[path] = true end
     end
@@ -317,7 +315,7 @@ local function process_repo_with_ref(rp, data, repo_head, all_files)
       seen[f] = true
       local status = determine_status_with_ref(f, deleted_set, repo_head, committed_set, uncommitted_set)
       table.insert(all_files, { path = f, status = status, repo = rp })
-      M._cache[rp .. ":" .. f .. ":stats"] = data.stats[f] or { added = 0, removed = 0 }
+      if data.stats[f] then M._cache[rp .. ":" .. f .. ":stats"] = data.stats[f] end
     end
   end
 end
@@ -335,7 +333,7 @@ local function process_repo_uncommitted(rp, data, all_files)
       seen[f] = true
       local status = determine_status_uncommitted(f, deleted_set, staged_set, unstaged_set)
       table.insert(all_files, { path = f, status = status, repo = rp })
-      M._cache[rp .. ":" .. f .. ":stats"] = data.stats[f] or { added = 0, removed = 0 }
+      if data.stats[f] then M._cache[rp .. ":" .. f .. ":stats"] = data.stats[f] end
     end
   end
 

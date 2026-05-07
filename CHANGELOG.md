@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.7.1 (2026-05-07)
+
+### Bug Fixes
+- Fixed stats showing +0/-0 for all files (skip_numstat cached zeros poisoning real stats)
+- Fixed `--no-renames` missing from numstat jobs in parallel loader (filename key mismatch)
+- Fixed inconsistent line highlight across machines (use `Visual` bg instead of `DiffChange`)
+
 ## v0.7.0 (2026-05-07)
 
 ### Features

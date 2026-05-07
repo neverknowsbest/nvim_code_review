@@ -21,7 +21,7 @@ function M.setup(opts)
 
   local change_fg = hl_attr("DiffAdd", "fg") or hl_attr("String", "fg") or 0x859900
   local delete_fg = hl_attr("DiffDelete", "fg") or hl_attr("Error", "fg") or 0xdc322f
-  local change_bg = hl_attr("DiffChange", "bg") or hl_attr("Visual", "bg") or 0xeef6d6
+  local change_bg = hl_attr("Visual", "bg") or hl_attr("DiffChange", "bg") or 0xeef6d6
   local delete_bg = hl_attr("DiffDelete", "bg") or hl_attr("Visual", "bg") or 0xf6d6d6
 
   vim.api.nvim_set_hl(0, "CodeReviewChange", { fg = change_fg, default = true })
