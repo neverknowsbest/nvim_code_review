@@ -301,10 +301,11 @@ function M.edit()
   vim.cmd("edit " .. vim.fn.fnameescape(abs_path))
 
   pcall(vim.api.nvim_win_set_cursor, s.viewer_win, cursor)
+  vim.cmd("normal! zz")
   state.data.editing = true
 
   local edit_buf = vim.api.nvim_win_get_buf(s.viewer_win)
-  util.set_nav_keymaps(edit_buf)
+  require("code_review.keymaps").setup_nav(edit_buf)
   vim.notify("Editing — gv to return to review", vim.log.levels.INFO)
 end
 

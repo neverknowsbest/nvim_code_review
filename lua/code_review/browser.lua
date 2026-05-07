@@ -11,12 +11,17 @@ local ns_hl = vim.api.nvim_create_namespace("code_review_browser_hl")
 local ns_stats = vim.api.nvim_create_namespace("code_review_browser_stats")
 
 local hl_scheduled = false
+local hl_dirty = false
 local function schedule_highlight()
+  hl_dirty = true
   if hl_scheduled then return end
   hl_scheduled = true
   vim.schedule(function()
     hl_scheduled = false
-    M.highlight_current()
+    if hl_dirty then
+      hl_dirty = false
+      M.highlight_current()
+    end
   end)
 end
 M.schedule_highlight = schedule_highlight
@@ -29,10 +34,17 @@ local function get_keys_help()
   )
 end
 
+local icon_cache = {}
 local function get_icon(filepath)
   if not has_devicons then return "" end
-  local icon, _ = devicons.get_icon(filepath, vim.fn.fnamemodify(filepath, ":e"), { default = true })
-  return (icon or "") .. " "
+  local ext = filepath:match("%.([^%.]+)$") or ""
+  local name = filepath:match("[^/]+$") or filepath
+  local key = ext ~= "" and ext or name
+  if icon_cache[key] then return icon_cache[key] end
+  local icon, _ = devicons.get_icon(name, ext, { default = true })
+  local result = (icon or "") .. " "
+  icon_cache[key] = result
+  return result
 end
 
 local function format_stat_str(stats, viewed_hunks, idx)
@@ -46,34 +58,32 @@ end
 local function format_file_line(entry, stats, viewed_hunks, idx, available_width)
   local icon = get_icon(entry.path)
   local stat = format_stat_str(stats, viewed_hunks, idx)
-  local stat_width = vim.fn.strdisplaywidth(stat)
+  local stat_width = #stat
 
-  -- Build prefix: [status] icon path
   local status_prefix = string.format("  [%s] %s", entry.status, icon)
-  local prefix_width = vim.fn.strdisplaywidth(status_prefix)
+  -- Prefix width: 4 (spaces+brackets) + status len + 2 ("] ") + icon display width (2 or 0)
+  local prefix_width = 5 + #entry.status + (has_devicons and 2 or 0)
   local path = entry.path
 
-  -- Available space for path = total width - prefix - stat - padding
   local path_space = available_width - prefix_width - stat_width - 2
   if path_space < 4 then path_space = 4 end
 
-  -- Truncate path from the LEFT to keep filename visible
-  if vim.fn.strdisplaywidth(path) > path_space then
-    while vim.fn.strdisplaywidth(path) > path_space - 1 and vim.fn.strchars(path) > 1 do
-      path = vim.fn.strcharpart(path, 1)
-    end
-    path = "…" .. path
+  if #path > path_space then
+    local trim = #path - path_space + 2
+    path = "<" .. path:sub(trim + 1)
   end
 
-  local path_display = path
-  local pad = string.rep(" ", math.max(1, available_width - prefix_width - vim.fn.strdisplaywidth(path_display) - stat_width))
-  return status_prefix .. path_display .. pad .. stat
+  local pad = string.rep(" ", math.max(1, available_width - prefix_width - #path - stat_width))
+  return status_prefix .. path .. pad .. stat
 end
 
-local function build_header(file_count, repos, total_added, total_removed)
-  local repo_label = #repos > 1 and string.format(" across %d repos", #repos) or ""
+local function build_header(file_count, active_repo_count, total_repos, total_added, total_removed)
+  local repo_label = ""
+  if total_repos > 1 then
+    repo_label = string.format(" %d/%d repos", active_repo_count, total_repos)
+  end
   local left = string.format(
-    "%%#CodeReviewBar# %%#CodeReviewBarBold#%d files changed%%#CodeReviewBar#%s  %%#CodeReviewBarAdd#+%d %%#CodeReviewBarDel#-%d%%#CodeReviewBar#",
+    "%%#CodeReviewBarBold# %d changed%%#CodeReviewBar#%s  %%#CodeReviewBarAdd#+%d %%#CodeReviewBarDel#-%d%%#CodeReviewBar#",
     file_count, repo_label, total_added, total_removed
   )
   local help = get_keys_help()
@@ -88,35 +98,47 @@ function M._load_hunks_async()
   local files = state.get("files")
   local stats = state.get("stats")
   local i = 0
+  local dirty = false
 
   local function load_next()
-    if gen ~= M._loading_gen then return end
-    i = i + 1
-    if i > #files then return end
-    if stats[i] and stats[i].chunks then
-      vim.defer_fn(load_next, 0)
+    if gen ~= M._loading_gen then
+      if dirty then schedule_highlight() end
       return
     end
-    local entry = files[i]
-    if entry then
-      local hunks = git.get_hunks(entry.path, entry.repo)
-      if stats[i] then
-        stats[i].chunks = #hunks
-        local s = layout.state
-        if s.browser_buf and vim.api.nvim_buf_is_valid(s.browser_buf) and gen == M._loading_gen then
-          local line_nr = M.line_for_idx(i)
-          if line_nr then
-            local viewed_hunks = state.get("viewed_hunks")
-            local new_line = format_file_line(entry, stats[i], viewed_hunks, i, M._max_name_len or 0)
-            vim.bo[s.browser_buf].modifiable = true
-            vim.api.nvim_buf_set_lines(s.browser_buf, line_nr - 1, line_nr, false, { new_line })
-            vim.bo[s.browser_buf].modifiable = false
-            schedule_highlight()
+    -- Process a batch of files per tick
+    local batch = 0
+    while batch < 5 do
+      i = i + 1
+      if i > #files then
+        if dirty then schedule_highlight() end
+        return
+      end
+      if stats[i] and stats[i].chunks then
+        batch = batch + 1
+      else
+        local entry = files[i]
+        if entry then
+          local hunks = git.get_hunks(entry.path, entry.repo)
+          if stats[i] then
+            stats[i].chunks = #hunks
+            local s = layout.state
+            if s.browser_buf and vim.api.nvim_buf_is_valid(s.browser_buf) and gen == M._loading_gen then
+              local line_nr = M._idx_to_line and M._idx_to_line[i]
+              if line_nr then
+                local viewed_hunks = state.get("viewed_hunks")
+                local new_line = format_file_line(entry, stats[i], viewed_hunks, i, M._max_name_len or 0)
+                vim.bo[s.browser_buf].modifiable = true
+                vim.api.nvim_buf_set_lines(s.browser_buf, line_nr - 1, line_nr, false, { new_line })
+                vim.bo[s.browser_buf].modifiable = false
+                dirty = true
+              end
+            end
           end
         end
+        batch = batch + 1
       end
     end
-    vim.defer_fn(load_next, 10)
+    vim.defer_fn(load_next, 100)
   end
 
   vim.defer_fn(load_next, 50)
@@ -135,38 +157,36 @@ local function build_file_list(files, stats, viewed_hunks, repos, available_widt
   local display = {}
   local line_map = {}
   local idx_to_line = {}
-  local repo_line_map = {}  -- line -> repo_path (for collapse toggle)
+  local repo_line_map = {}
   local multi = #repos > 1
   local current_repo = nil
   local collapsed = state.get("collapsed_repos")
+  local active_repo_count = 0
 
   for i, entry in ipairs(files) do
-    if multi and entry.repo ~= current_repo then
+    if entry.repo ~= current_repo then
       current_repo = entry.repo
+      active_repo_count = active_repo_count + 1
       local name = vim.fn.fnamemodify(entry.repo, ":t")
       local marker = collapsed[entry.repo] and " ▶ " or " ┌ "
       table.insert(display, marker .. name .. "/")
       repo_line_map[#display] = entry.repo
     end
-    if not multi or not collapsed[entry.repo] then
+    if not collapsed[entry.repo] then
       table.insert(display, format_file_line(entry, stats[i], viewed_hunks, i, available_width))
       line_map[#display] = i
       idx_to_line[i] = #display
     end
   end
 
-  return display, line_map, idx_to_line, repo_line_map
+  return display, line_map, idx_to_line, repo_line_map, active_repo_count
 end
 
 function M._setup_keymaps(buf)
   if M._keymaps_set then return end
-  local opts = { buffer = buf, nowait = true, silent = true }
-  vim.keymap.set("n", "<CR>", function() M.select() end, opts)
-  vim.keymap.set("n", "q", function() require("code_review").close() end, opts)
-  util.set_nav_keymaps(buf)
+  require("code_review.keymaps").setup_browser(buf)
   M._keymaps_set = true
 end
-
 function M.render()
   local s = layout.state
   if not s.browser_buf or not vim.api.nvim_buf_is_valid(s.browser_buf) then
@@ -184,11 +204,11 @@ function M.render()
 
   local total_added, total_removed = sum_stats(stats)
 
-  local header = build_header(#files, repos, total_added, total_removed)
-  vim.wo[s.browser_win].winbar = header
-
   local available_width = vim.api.nvim_win_get_width(s.browser_win)
-  local display, line_map, idx_to_line, repo_line_map = build_file_list(files, stats, viewed_hunks, repos, available_width)
+  local display, line_map, idx_to_line, repo_line_map, active_repo_count = build_file_list(files, stats, viewed_hunks, repos, available_width)
+
+  local header = build_header(#files, active_repo_count, #repos, total_added, total_removed)
+  vim.wo[s.browser_win].winbar = header
 
   M._line_map = line_map
   M._idx_to_line = idx_to_line
@@ -216,11 +236,31 @@ function M.highlight_current()
 
   local viewed = state.get("viewed")
   local current_idx = state.get("current_idx")
+  local files = state.get("files")
+
+  -- Highlight repo headers
+  if M._repo_line_map then
+    for line, _ in pairs(M._repo_line_map) do
+      vim.api.nvim_buf_set_extmark(s.browser_buf, ns_hl, line - 1, 0, { line_hl_group = "Directory" })
+    end
+  end
+
+  -- Dim deleted files
+  for i, entry in ipairs(files) do
+    if entry.status == "UD" and i ~= current_idx then
+      local l = M._idx_to_line and M._idx_to_line[i]
+      if l then
+        vim.api.nvim_buf_set_extmark(s.browser_buf, ns_hl, l - 1, 0, { line_hl_group = "CodeReviewDelete" })
+      end
+    end
+  end
 
   for idx, _ in pairs(viewed) do
     local line = M.line_for_idx(idx)
     if line and idx ~= current_idx then
-      vim.api.nvim_buf_set_extmark(s.browser_buf, ns_hl, line - 1, 0, { line_hl_group = "Comment" })
+      local entry = files[idx]
+      local hl = (entry and entry.status == "UD") and "CodeReviewDelete" or "Comment"
+      vim.api.nvim_buf_set_extmark(s.browser_buf, ns_hl, line - 1, 0, { line_hl_group = hl })
     end
   end
 
@@ -294,10 +334,8 @@ function M.select()
   local idx = M._line_map and M._line_map[line]
   local files = state.get("files")
   if idx and idx >= 1 and idx <= #files then
-    state.data.current_idx = idx
-    local viewer = require("code_review.viewer")
-    viewer.show_file(files[idx].path, files[idx].repo)
-    schedule_highlight()
+    local cr = require("code_review")
+    cr._goto_file(idx)
   end
 end
 

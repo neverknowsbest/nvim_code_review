@@ -59,13 +59,7 @@ function M.open()
 
   -- Keymaps (set once per buffer)
   if not M._keymaps_set then
-    local opts = { buffer = M._buf, nowait = true, silent = true }
-    vim.keymap.set("n", "<CR>", function() M.select() end, opts)
-    vim.keymap.set("n", "s", function() M.toggle_mode() end, opts)
-    vim.keymap.set("n", "<Tab>", function() M.cycle_repo() end, opts)
-    vim.keymap.set("n", "<S-Tab>", function() M.cycle_repo_back() end, opts)
-    vim.keymap.set("n", "q", function() require("code_review").close() end, opts)
-    util.set_nav_keymaps(M._buf)
+    require("code_review.keymaps").setup_log(M._buf)
     M._keymaps_set = true
   end
 
@@ -84,30 +78,48 @@ function M.close()
   M._buf = nil
 end
 
+M._log_cache = {}  -- repo_path -> { commits, entries }
+
+function M.clear_cache()
+  M._log_cache = {}
+end
+
 function M.refresh()
   if not M._buf or not vim.api.nvim_buf_is_valid(M._buf) then
     return
   end
-
-  -- Get git log from first repo
+  -- Invalidate cache for current repo and re-fetch
   local repos = git.find_repos()
   if #repos == 0 then return end
   local repo = repos[M._repo_idx] and repos[M._repo_idx].path or repos[1].path
+  M._log_cache[repo] = nil
+  M._render_log(repos, repo)
+end
 
+function M.render_cached()
+  if not M._buf or not vim.api.nvim_buf_is_valid(M._buf) then
+    return
+  end
+  local repos = git.find_repos()
+  if #repos == 0 then return end
+  local repo = repos[M._repo_idx] and repos[M._repo_idx].path or repos[1].path
+  M._render_log(repos, repo)
+end
+
+function M._fetch_log_data(repo)
   local cfg = require("code_review.config").current.log
   local max = tostring(cfg.max_commits)
+
   local result = vim.system(
     { "git", "-C", repo, "log", "--format=%h %s", "--abbrev=8", "-" .. max }
   ):wait(5000)
-  local output = result and result.code == 0 and vim.split(result.stdout or "", "\n", { trimempty = true }) or { "-- Unable to load git log" }
+  local output = result and result.code == 0 and vim.split(result.stdout or "", "\n", { trimempty = true }) or {}
 
-  -- Get stat info per commit
   local stat_result = vim.system(
     { "git", "-C", repo, "log", "--format=%h", "--shortstat", "--abbrev=8", "-" .. max }
   ):wait(5000)
   local stat_output = stat_result and stat_result.code == 0 and vim.split(stat_result.stdout or "", "\n", { trimempty = true }) or {}
 
-  -- Parse stats into a map of hash -> {files, ins, del}
   local commit_stats = {}
   local current_hash = nil
   for _, line in ipairs(stat_output) do
@@ -115,88 +127,89 @@ function M.refresh()
     if hash and #hash >= 7 then
       current_hash = hash
     elseif current_hash and line:match("file") then
-      local files = line:match("(%d+) file") or "0"
-      local ins = line:match("(%d+) insertion") or "0"
-      local del = line:match("(%d+) deletion") or "0"
-      commit_stats[current_hash] = { files = files, ins = ins, del = del }
+      commit_stats[current_hash] = {
+        files = line:match("(%d+) file") or "0",
+        ins = line:match("(%d+) insertion") or "0",
+        del = line:match("(%d+) deletion") or "0",
+      }
       current_hash = nil
     end
   end
 
-  M._commits = {}
-  local display = {}
-  local mode_label = M._single_commit_mode and "[single commit]" or "[range to HEAD]"
-  local repo_label = #repos > 1
-    and string.format(" %s (%d/%d)", repos[M._repo_idx].name, M._repo_idx, #repos)
-    or ""
-  local left = "%#CodeReviewBar# %#CodeReviewBarBold#Git Log%#CodeReviewBar# " .. mode_label .. repo_label
-  local right = #repos > 1
-    and "<CR>: select  <Tab>: repo  s: mode  q: close "
-    or "<CR>: select  s: mode  q: close "
-  vim.wo[M._win].winbar = left .. "%=%#CodeReviewBar#" .. right
-
-  local util = require("code_review.util")
-
-  -- Uncommitted entry (tracked + untracked)
-  local uc_result = vim.system({ "git", "-C", repo, "diff", "--shortstat", "HEAD" }):wait(5000)
+  -- Uncommitted stats
   local uc_files, uc_ins, uc_del = 0, 0, 0
+  local uc_result = vim.system({ "git", "-C", repo, "diff", "--shortstat", "HEAD" }):wait(5000)
   if uc_result and uc_result.code == 0 and uc_result.stdout and #uc_result.stdout > 0 then
     uc_files = tonumber(uc_result.stdout:match("(%d+) file")) or 0
     uc_ins = tonumber(uc_result.stdout:match("(%d+) insertion")) or 0
     uc_del = tonumber(uc_result.stdout:match("(%d+) deletion")) or 0
   end
-  -- Add untracked files
-  local ut_result = vim.system({ "git", "-C", repo, "ls-files", "--others", "--exclude-standard" }):wait(5000)
-  if ut_result and ut_result.code == 0 and ut_result.stdout then
-    local ut_files = vim.split(ut_result.stdout, "\n", { trimempty = true })
-    for _, f in ipairs(ut_files) do
-      uc_files = uc_files + 1
-      uc_ins = uc_ins + git.count_file_lines(repo .. "/" .. f)
-    end
-  end
-  table.insert(M._commits, { hash = nil, msg = "uncommitted" })
 
-  -- Build commit entries
-  local entries = {}
-  table.insert(entries, { prefix = "  ●        uncommitted changes", files = tostring(uc_files), ins = tostring(uc_ins), del = tostring(uc_del) })
+  -- Build entries
+  local commits = { { hash = nil, msg = "uncommitted" } }
+  local entries = { { prefix = "  ●        uncommitted changes", files = tostring(uc_files), ins = tostring(uc_ins), del = tostring(uc_del) } }
   for _, line in ipairs(output) do
     local hash, msg = line:match("^(%S+)%s+(.*)$")
     if hash then
-      table.insert(M._commits, { hash = hash, msg = msg })
+      table.insert(commits, { hash = hash, msg = msg })
       local s = commit_stats[hash] or { files = "0", ins = "0", del = "0" }
       table.insert(entries, { prefix = "  " .. hash .. " " .. msg, files = s.files, ins = s.ins, del = s.del })
     end
   end
 
-  -- Right-justify stats, truncate commit messages from the right
-  local log_width = vim.api.nvim_win_get_width(M._win)
+  return { commits = commits, entries = entries }
+end
 
+local function build_log_winbar(repos, mode_label)
+  local repo_label = #repos > 1
+    and string.format(" %%#CodeReviewBarBold#%s%%#CodeReviewBar# (%d/%d)", repos[M._repo_idx].name, M._repo_idx, #repos)
+    or ""
+  local left = "%#CodeReviewBar# %#CodeReviewBarBold#Git Log%#CodeReviewBar# %#CodeReviewBarAdd#" .. mode_label .. "%#CodeReviewBar#" .. repo_label
+  local right = #repos > 1
+    and "<CR>: select  <Tab>: repo  s: mode  q: close "
+    or "<CR>: select  s: mode  q: close "
+  return left .. "%=%#CodeReviewBar#" .. right
+end
+
+local function format_log_line(prefix, stat, available, log_width)
+  local stat_width = #stat
+  if #prefix > available then
+    prefix = prefix:sub(1, available - 1) .. "<"
+  end
+  local pad = string.rep(" ", math.max(1, log_width - #prefix - stat_width))
+  return prefix .. pad .. stat
+end
+
+local function build_log_display(entries, log_width)
+  local util = require("code_review.util")
+  local display = {}
   for _, e in ipairs(entries) do
     local stat = util.format_stat(e.files, e.ins, e.del)
-    local stat_width = vim.fn.strdisplaywidth(stat)
-    local available = log_width - stat_width - 1
-    local prefix = e.prefix
-
-    -- Truncate from the right to keep start of message visible
-    if vim.fn.strdisplaywidth(prefix) > available then
-      while vim.fn.strdisplaywidth(prefix) > available - 1 and vim.fn.strchars(prefix) > 1 do
-        prefix = vim.fn.strcharpart(prefix, 0, vim.fn.strchars(prefix) - 1)
-      end
-      prefix = prefix .. "…"
-    end
-
-    local pad = string.rep(" ", math.max(1, log_width - vim.fn.strdisplaywidth(prefix) - stat_width))
-    table.insert(display, prefix .. pad .. stat)
+    local available = log_width - #stat - 1
+    table.insert(display, format_log_line(e.prefix, stat, available, log_width))
   end
+  return display
+end
+
+function M._render_log(repos, repo)
+  if not M._win or not vim.api.nvim_win_is_valid(M._win) then return end
+  if not M._log_cache[repo] then
+    M._log_cache[repo] = M._fetch_log_data(repo)
+  end
+  local cached = M._log_cache[repo]
+  M._commits = cached.commits
+
+  local mode_label = M._single_commit_mode and "[single commit]" or "[range to HEAD]"
+  vim.wo[M._win].winbar = build_log_winbar(repos, mode_label)
+
+  local log_width = vim.api.nvim_win_get_width(M._win)
+  local display = build_log_display(cached.entries, log_width)
 
   vim.bo[M._buf].modifiable = true
   vim.api.nvim_buf_set_lines(M._buf, 0, -1, false, display)
   vim.bo[M._buf].modifiable = false
 
-  -- Highlight stats
-  util.apply_stat_highlights(M._buf, ns, display)
-
-  -- Highlight selected commit
+  require("code_review.util").apply_stat_highlights(M._buf, ns, display)
   M._highlight()
 end
 
@@ -273,6 +286,26 @@ function M.toggle_mode()
   M.refresh()
 end
 
+local function scroll_browser_to_repo(repo_path)
+  local state = require("code_review.state")
+  local browser = require("code_review.browser")
+  local files = state.get("files")
+  local s = layout.state
+  if not s.browser_win or not vim.api.nvim_win_is_valid(s.browser_win) then return end
+
+  -- Find first file from this repo
+  for i, entry in ipairs(files) do
+    if entry.repo == repo_path then
+      local line = browser.line_for_idx(i)
+      if line then
+        pcall(vim.api.nvim_win_set_cursor, s.browser_win, { math.max(1, line - 1), 0 })
+        vim.api.nvim_win_call(s.browser_win, function() vim.cmd("normal! zt") end)
+      end
+      return
+    end
+  end
+end
+
 function M.cycle_repo()
   local repos = git.find_repos()
   if #repos <= 1 then return end
@@ -280,6 +313,7 @@ function M.cycle_repo()
   if M._repo_idx > #repos then M._repo_idx = 1 end
   M._selected = 1
   M.refresh()
+  scroll_browser_to_repo(repos[M._repo_idx].path)
 end
 
 function M.cycle_repo_back()
@@ -289,15 +323,7 @@ function M.cycle_repo_back()
   if M._repo_idx < 1 then M._repo_idx = #repos end
   M._selected = 1
   M.refresh()
-end
-
-function M.reset()
-  M._selected = 0
-  git.set_base(nil)
-  git._head_override = nil
-  git.clear_cache()
-  M._highlight()
-  require("code_review").refresh()
+  scroll_browser_to_repo(repos[M._repo_idx].path)
 end
 
 function M.reset()
@@ -306,6 +332,7 @@ function M.reset()
   M._single_commit_mode = nil
   M._keymaps_set = false
   M._repo_idx = 1
+  M._log_cache = {}
 end
 
 return M

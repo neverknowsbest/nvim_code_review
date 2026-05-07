@@ -215,25 +215,27 @@ end
 
 -- Parallel load: job building
 
-local function build_jobs_for_repo(rp)
+local function build_jobs_for_repo(rp, skip_numstat)
   local jobs = {}
   local base_ref, head_override = M.get_ref_for_repo(rp)
 
   if base_ref then
     local diff_range = head_override and (base_ref .. ".." .. head_override) or base_ref
-    table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-only", diff_range }, repo = rp, kind = "branch_files" })
-    table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--diff-filter=D", "--name-only", diff_range }, repo = rp, kind = "deleted" })
-    table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--numstat", diff_range }, repo = rp, kind = "numstat" })
-    if not head_override then
-      table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-only", base_ref .. "..HEAD" }, repo = rp, kind = "committed" })
-      table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-only", "HEAD" }, repo = rp, kind = "uncommitted" })
+    table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-status", diff_range }, repo = rp, kind = "name_status" })
+    if not skip_numstat then
+      table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--numstat", diff_range }, repo = rp, kind = "numstat" })
+      if not head_override then
+        table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-status", base_ref .. "..HEAD" }, repo = rp, kind = "committed_status" })
+        table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-only", "HEAD" }, repo = rp, kind = "uncommitted" })
+      end
     end
   else
-    table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-only", "HEAD" }, repo = rp, kind = "changed" })
-    table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--diff-filter=D", "--name-only", "HEAD" }, repo = rp, kind = "deleted" })
-    table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--numstat", "HEAD" }, repo = rp, kind = "numstat" })
-    table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--cached", "--name-only" }, repo = rp, kind = "staged" })
-    table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-only" }, repo = rp, kind = "unstaged" })
+    table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-status", "HEAD" }, repo = rp, kind = "name_status" })
+    if not skip_numstat then
+      table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--numstat", "HEAD" }, repo = rp, kind = "numstat" })
+      table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--cached", "--name-only" }, repo = rp, kind = "staged" })
+      table.insert(jobs, { cmd = { "git", "-C", rp, "diff", "--name-only" }, repo = rp, kind = "unstaged" })
+    end
     local cfg = require("code_review.config").current
     if cfg.show_untracked then
       table.insert(jobs, { cmd = { "git", "-C", rp, "ls-files", "--others", "--exclude-standard" }, repo = rp, kind = "untracked" })
@@ -260,16 +262,40 @@ end
 
 -- Parallel load: collect results for a repo
 
+local function parse_name_status(lines)
+  local files = {}
+  local deleted = {}
+  for _, line in ipairs(lines) do
+    local status, rest = line:match("^(%S+)\t(.+)$")
+    if status and rest then
+      -- Renames/copies: "R100\told\tnew" — use the new path
+      local path = rest:match("\t(.+)$") or rest
+      table.insert(files, path)
+      if status == "D" then deleted[path] = true end
+    end
+  end
+  return files, deleted
+end
+
 local function collect_repo_results(results, rp)
   local data = {
     changed = {}, staged = {}, unstaged = {},
     untracked = {}, branch_files = {}, deleted = {},
     committed = {}, uncommitted = {}, stats = {},
+    committed_deleted = {},
   }
   for _, r in ipairs(results) do
     if r.job.repo == rp and r.code == 0 then
       if r.job.kind == "numstat" then
         data.stats = parse_numstat(r.lines)
+      elseif r.job.kind == "name_status" then
+        local files, deleted = parse_name_status(r.lines)
+        data.changed = files
+        data.branch_files = files
+        data.deleted = deleted
+      elseif r.job.kind == "committed_status" then
+        local files, _ = parse_name_status(r.lines)
+        data.committed = files
       else
         data[r.job.kind] = r.lines
       end
@@ -281,7 +307,7 @@ end
 -- Parallel load: process repo with base ref
 
 local function process_repo_with_ref(rp, data, repo_head, all_files)
-  local deleted_set = lines_to_set(data.deleted)
+  local deleted_set = data.deleted  -- already a set from parse_name_status
   local committed_set = lines_to_set(data.committed)
   local uncommitted_set = lines_to_set(data.uncommitted)
   local seen = {}
@@ -301,7 +327,7 @@ end
 local function process_repo_uncommitted(rp, data, all_files)
   local staged_set = lines_to_set(data.staged)
   local unstaged_set = lines_to_set(data.unstaged)
-  local deleted_set = lines_to_set(data.deleted)
+  local deleted_set = data.deleted  -- already a set from parse_name_status
   local seen = {}
 
   for _, f in ipairs(data.changed) do
@@ -327,11 +353,11 @@ end
 
 -- Public: load_all_repos (orchestrator)
 
-function M.load_all_repos(repos)
+function M.load_all_repos(repos, skip_numstat)
   -- Build jobs for all repos
   local jobs = {}
   for _, repo in ipairs(repos) do
-    local repo_jobs = build_jobs_for_repo(repo.path)
+    local repo_jobs = build_jobs_for_repo(repo.path, skip_numstat)
     for _, j in ipairs(repo_jobs) do
       table.insert(jobs, j)
     end

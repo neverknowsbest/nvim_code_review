@@ -1,5 +1,57 @@
 # Changelog
 
+## v0.7.0 (2026-05-07)
+
+### Features
+- Repo-aware navigation sync: log auto-switches when navigating files across repos
+- Log → browser sync: `<Tab>`/`<S-Tab>` scrolls browser to the active repo
+- Collapsible repos skip during navigation (only navigates visible files)
+- Repo headers shown in single-repo mode (collapsible)
+- `<S-CR>` lands on last hunk of previous file when reversing
+- Shared keybindings between viewer and browser panes
+- Centralized keymap definitions (`keymaps.lua`)
+- Log data cached per-repo (instant repo switching, no re-fetch)
+- Two-phase initial load: UI appears instantly, stats fill in background
+- Single `git diff --name-status` per repo on initial load (was 5-6 commands)
+- Working directory change detection with reload prompt
+- Repo headers highlighted with `Directory` color
+- Handles renamed/copied files in git diffs
+
+### Performance
+- Icon cache by extension/filename (eliminates pcall per file)
+- Zero `vim.fn` calls in file line formatting hot path
+- Active repo count computed during file list build (no extra iteration)
+- Async hunk loader batches 5 files per tick at 100ms intervals
+- Deferred auto-refresh (100ms delay so UI renders first)
+- Log `render_cached()` for repo switching (no git calls)
+- Non-blocking stats load: one repo at a time with input yielding
+- Smart cache invalidation: only hunks cleared on refresh, stats updated in-place
+- Viewed state/chunks preserved across refreshes (no visual flash)
+- Full view saved/restored on refresh (no scroll reset)
+
+### Bug Fixes
+- Fixed truncation breaking column alignment (uses `<` instead of multi-byte `…`)
+- Fixed icon cache giving wrong icons for extensionless files (Makefile, etc.)
+- Fixed `_render_log` crash on closed window (validity check)
+- Fixed `next_file`/`prev_file` crash on empty file list
+- Fixed async hunk loader overwriting repo headers (collapsed file fallback)
+- Fixed `<Tab>` in browser triggering nvim's default window switch
+- Fixed cursor blink from rapid async loader redraws
+- Fixed `:` command delay (non-blocking background stats)
+- Fixed background stats loader race condition (generation counter)
+- Fixed renamed files silently dropped from review
+- Fixed single-repo collapse inconsistency with navigation
+- Fixed viewer scroll resetting on auto-refresh (winsaveview)
+- Removed dead `is_file_visible` function
+
+### Code Quality
+- Orchestrator pattern applied to `M.open`, `M.refresh`, `_render_log`
+- Extracted: `validate_and_load`, `compute_stats`, `populate_state`, `restore_and_render`, `setup_auto_refresh`
+- Extracted: `build_log_winbar`, `format_log_line`, `build_log_display`
+- Extracted: `refresh_log`, `refresh_browser_and_viewer`
+- `build_jobs_for_repo` accepts `skip_numstat` for fast initial load
+- `parse_name_status` combines file list + deleted detection in one parse
+
 ## v0.6.0 (2026-05-06)
 
 ### Features

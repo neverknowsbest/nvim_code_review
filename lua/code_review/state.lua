@@ -13,6 +13,7 @@ M.data = {
   viewed = {},
   viewed_hunks = {},
   collapsed_repos = {},
+  active_repo = nil,
   log_repo_idx = 1,
   log_selected = 0,
   single_commit_mode = false,
