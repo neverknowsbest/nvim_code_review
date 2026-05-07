@@ -6,6 +6,7 @@ M.defaults = {
   show_untracked = true,
   persist_session = true,
   auto_refresh = true,
+  wrap_navigation = "loop", -- "loop" | "stop" | "expand"
   log = {
     show_on_open = true,
     max_commits = 20,

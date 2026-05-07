@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.8.0 (2026-05-07)
+
+### Features
+- New git data layer (`_repo_data`): per-file structured storage, lazy accessors, async loading
+- Async `M.refresh()` via `git.load_all` — non-blocking full reload
+- `git.load_repo` / `git.reload_stats` / `git.reload_hunks` — granular async operations
+- Commit accessors: `get_commits`, `get_commit`, `get_commit_files`, `get_file_commits`
+- Configurable `wrap_navigation`: `"loop"` | `"stop"` | `"expand"` for end-of-list behavior
+- Repo-level +/- stats in browser headers
+- Browser skip-render optimization (no buffer rewrite if content unchanged)
+- `.git/index` watcher infrastructure (disabled on macOS due to read-triggers)
+- `DirChanged` now does async refresh instead of close/open cycle
+- `strdisplaywidth` for accurate column alignment with multi-byte icons
+
+### Performance
+- Async refresh: no UI blocking on `r` or FocusGained
+- Browser lazy render: skips `buf_set_lines` when display is unchanged
+- Highlights applied in single pass after buffer write (no flash)
+- Chunks preserved across refresh for unchanged files
+- Removed background stats loader (eliminated double-render source)
+- `_refreshing` guard prevents concurrent refresh
+
+### Bug Fixes
+- Fixed stats showing +0/-0 (skip_numstat cached zeros)
+- Fixed `--no-renames` missing from parallel loader numstat
+- Fixed highlight flash on refresh (single-pass extmarks)
+- Fixed column misalignment from multi-byte unicode (`┌`, `●`, icons)
+- Fixed `concat nil` on commit selection (base_part extraction)
+- Fixed viewed hunk count incrementing on auto-refresh
+- Fixed infinite watcher loop (git diff reads trigger fs_event on macOS)
+- Consistent `Visual` bg for line highlights across machines
+
+### Architecture
+- `keymaps.lua`: centralized keymap definitions
+- `git.lua` rewritten: `_repo_data` structure, `build_repo_from_results` decomposed into helpers
+- `build_file_list` refactored: `sum_repo_stats`, `format_repo_header` extracted
+- Design doc: `docs/004-git-data-layer.md`
+
 ## v0.7.1 (2026-05-07)
 
 ### Bug Fixes

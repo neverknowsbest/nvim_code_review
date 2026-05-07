@@ -173,10 +173,12 @@ end
 
 local function format_log_line(prefix, stat, available, log_width)
   local stat_width = #stat
-  if #prefix > available then
+  local prefix_display = vim.fn.strdisplaywidth(prefix)
+  if prefix_display > available then
     prefix = prefix:sub(1, available - 1) .. "<"
+    prefix_display = available
   end
-  local pad = string.rep(" ", math.max(1, log_width - #prefix - stat_width))
+  local pad = string.rep(" ", math.max(1, log_width - prefix_display - stat_width))
   return prefix .. pad .. stat
 end
 

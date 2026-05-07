@@ -16,13 +16,14 @@ A Neovim plugin for reviewing git changes. Opens a dedicated tab with full synta
 - Progress tracking: viewed hunks per file, viewed file dimming
 - `<CR>` advance flow: walk through all changes with a single key (skips deleted files)
 - Parallel git loading for fast startup in multi-repo workspaces
+- Fully async refresh — no UI blocking on reload
+- Skip-render optimization (no buffer rewrite when display unchanged)
 - Background async hunk loading (non-blocking)
-- Two-phase load: UI appears instantly, stats fill in background
 - Log data cached per-repo (instant switching between repos)
 - Zero `vim.fn` calls in rendering hot path
-- Non-blocking background stats (input stays responsive during load)
+- Structured git data layer with lazy accessors and per-repo storage
 - Session persistence: resume reviews where you left off (scoped by git ref)
-- Auto-refresh on focus and tab switch
+- Auto-refresh on focus
 - Floating winbar headers (always visible when scrolling)
 - `g?` keyboard shortcuts modal
 - Hot reload with `:CodeReviewReload` during development

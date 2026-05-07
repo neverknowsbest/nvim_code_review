@@ -10,6 +10,7 @@ local state = require("code_review.state")
 local M = {}
 local augroup = nil
 local _stats_gen = 0
+local _refreshing = false
 
 function M.setup(opts)
   config.apply(opts)
@@ -82,7 +83,7 @@ local function validate_and_load(base_ref)
   end
 
   -- Skip numstat for fast initial load; stats loaded in background
-  local all_files = git.load_all_repos(repos, true)
+  local all_files = git.load_all_repos(repos)
   if #all_files == 0 and not config.current.log.show_on_open then
     vim.notify("No uncommitted changes found", vim.log.levels.INFO)
     return nil, nil
@@ -127,13 +128,13 @@ end
 local function setup_auto_refresh()
   augroup = vim.api.nvim_create_augroup("CodeReviewAutoRefresh", { clear = true })
   if config.current.auto_refresh then
-    vim.api.nvim_create_autocmd({ "FocusGained", "TabEnter" }, {
+    vim.api.nvim_create_autocmd("FocusGained", {
       group = augroup,
       callback = function()
         if layout.state.tab
           and vim.api.nvim_tabpage_is_valid(layout.state.tab)
           and vim.api.nvim_get_current_tabpage() == layout.state.tab then
-          vim.defer_fn(function() M.refresh() end, 100)
+          if not _refreshing then M.refresh() end
         end
       end,
     })
@@ -145,8 +146,9 @@ local function setup_auto_refresh()
       vim.schedule(function()
         vim.ui.input({ prompt = "Working directory changed. Reload code review? (Y/n): " }, function(input)
           if not input or input:lower() == "n" then return end
-          M.close()
-          M.open()
+          git._repo_list = nil
+          git._repo_data = {}
+          M.refresh()
           vim.cmd("echo ''")
         end)
       end)
@@ -166,12 +168,7 @@ function M.open(base_ref)
   layout.open()
   M._setup_keymaps()
 
-  -- Populate with empty stats for instant UI
-  local empty_stats = {}
-  for i = 1, #all_files do
-    empty_stats[i] = { added = 0, removed = 0, chunks = nil }
-  end
-  populate_state(repos, all_files, empty_stats)
+  populate_state(repos, all_files, compute_stats(all_files))
 
   if config.current.log.show_on_open then
     log.open_panel()
@@ -180,33 +177,6 @@ function M.open(base_ref)
   restore_and_render()
   vim.api.nvim_set_current_win(layout.state.viewer_win)
   setup_auto_refresh()
-
-  -- Load stats in background, one repo at a time to avoid blocking input
-  _stats_gen = _stats_gen + 1
-  local my_gen = _stats_gen
-  local repo_list = vim.deepcopy(repos)
-  local file_ref = all_files
-  local ri = 0
-  local function load_next_repo_stats()
-    if my_gen ~= _stats_gen then return end  -- cancelled by newer refresh/open
-    ri = ri + 1
-    if ri > #repo_list then
-      -- All done, re-render with real stats
-      if my_gen ~= _stats_gen then return end
-      local stats = {}
-      for i, entry in ipairs(file_ref) do
-        local added, removed = git.get_file_stats(entry.path, entry.repo)
-        stats[i] = { added = added, removed = removed, chunks = nil }
-      end
-      state.set("stats", stats)
-      browser.render()
-      return
-    end
-    -- Fetch numstat for one repo (caches it)
-    git.get_all_stats(repo_list[ri].path)
-    vim.defer_fn(load_next_repo_stats, 10)
-  end
-  vim.defer_fn(load_next_repo_stats, 10)
 end
 
 local function refresh_log()
@@ -225,9 +195,8 @@ local function refresh_browser_and_viewer(all_files, prev_idx)
     end
     local entry = all_files[idx]
     if entry and s.viewer_win and vim.api.nvim_win_is_valid(s.viewer_win) then
-      local view = vim.api.nvim_win_call(s.viewer_win, function() return vim.fn.winsaveview() end)
-      viewer.show_file(entry.path, entry.repo)
-      vim.api.nvim_win_call(s.viewer_win, function() vim.fn.winrestview(view) end)
+      -- Only refresh diff signs, don't reload file or change viewed state
+      viewer.refresh_diff()
     end
   else
     browser.render()
@@ -240,54 +209,69 @@ local function refresh_browser_and_viewer(all_files, prev_idx)
   end
 end
 
+local _soft_refresh_timer = nil
+function M.soft_refresh()
+  -- Only auto-refresh from index watcher (commit/stage/reset)
+  -- FocusGained and BufWritePost are too noisy for full refresh
+end
+
 function M.refresh()
-  _stats_gen = _stats_gen + 1  -- cancel any running background stats loader
-  -- Clear hunk cache (content may have changed), keep stats (updated in-place by load)
-  for key, _ in pairs(git._cache) do
-    if key:match(":hunks$") then git._cache[key] = nil end
-  end
-  git._repos = nil
+  if _refreshing then return end
+  _refreshing = true
+  _stats_gen = _stats_gen + 1
+  git._repo_list = nil
   refresh_log()
   local repos = git.find_repos()
-  local all_files = git.load_all_repos(repos)
   local prev_idx = state.get("current_idx")
-
-  -- Preserve viewed state and chunk counts for files that still exist
   local old_files = state.get("files")
   local old_stats = state.get("stats")
   local old_viewed = state.get("viewed")
   local old_viewed_hunks = state.get("viewed_hunks")
 
-  local new_stats = compute_stats(all_files)
-
-  -- Carry over chunks from old stats by matching file paths
-  if #old_files > 0 then
-    local old_index = {}
-    for i, f in ipairs(old_files) do
-      old_index[f.repo .. ":" .. f.path] = i
-    end
-    for i, entry in ipairs(all_files) do
-      local old_i = old_index[entry.repo .. ":" .. entry.path]
-      if old_i and old_stats[old_i] then
-        new_stats[i].chunks = old_stats[old_i].chunks
+  local opts = { include_untracked = config.current.show_untracked }
+  git.load_all(repos, opts, nil, function()
+    -- All repos loaded — build flat file list from repo data
+    local all_files = {}
+    for _, repo in ipairs(repos) do
+      local rd = git.get_repo_data(repo.path)
+      if rd then
+        for _, f in ipairs(rd.file_list) do
+          table.insert(all_files, { path = f, status = rd.files[f].status, repo = repo.path })
+        end
       end
     end
-    -- Remap viewed/viewed_hunks to new indices
-    local new_viewed = {}
-    local new_viewed_hunks = {}
-    for i, entry in ipairs(all_files) do
-      local old_i = old_index[entry.repo .. ":" .. entry.path]
-      if old_i then
-        if old_viewed[old_i] then new_viewed[i] = true end
-        if old_viewed_hunks[old_i] then new_viewed_hunks[i] = old_viewed_hunks[old_i] end
-      end
-    end
-    state.data.viewed = new_viewed
-    state.data.viewed_hunks = new_viewed_hunks
-  end
 
-  populate_state(repos, all_files, new_stats)
-  refresh_browser_and_viewer(all_files, prev_idx)
+    local new_stats = compute_stats(all_files)
+
+    -- Remap viewed/viewed_hunks, clearing if stats changed
+    if #old_files > 0 then
+      local old_index = {}
+      for i, f in ipairs(old_files) do
+        old_index[f.repo .. ":" .. f.path] = i
+      end
+      local new_viewed = {}
+      local new_viewed_hunks = {}
+      for i, entry in ipairs(all_files) do
+        local old_i = old_index[entry.repo .. ":" .. entry.path]
+        if old_i then
+          local os = old_stats[old_i]
+          local ns = new_stats[i]
+          local changed = not os or os.added ~= ns.added or os.removed ~= ns.removed
+          if not changed then
+            if old_viewed[old_i] then new_viewed[i] = true end
+            if old_viewed_hunks[old_i] then new_viewed_hunks[i] = old_viewed_hunks[old_i] end
+            if os and os.chunks then ns.chunks = os.chunks end
+          end
+        end
+      end
+      state.data.viewed = new_viewed
+      state.data.viewed_hunks = new_viewed_hunks
+    end
+
+    populate_state(repos, all_files, new_stats)
+    refresh_browser_and_viewer(all_files, prev_idx)
+    _refreshing = false
+  end)
 end
 
 local function mark_file(idx)
@@ -366,6 +350,7 @@ local function goto_file(idx)
   if s.browser_win and vim.api.nvim_win_is_valid(s.browser_win) then
     local line = browser.line_for_idx(idx)
     pcall(vim.api.nvim_win_set_cursor, s.browser_win, { line, 0 })
+    vim.api.nvim_win_call(s.browser_win, function() vim.cmd("normal! zz") end)
   end
 end
 
@@ -388,8 +373,32 @@ function M.next_file()
       return
     end
   until idx == start
-  ensure_file_visible(files[start])
-  goto_file(start)
+  -- No visible file found — apply wrap_navigation
+  local action = config.current.wrap_navigation
+  if action == "stop" then return end
+  if action == "expand" then
+    -- Expand next collapsed repo
+    idx = start
+    repeat
+      idx = idx + 1
+      if idx > #files then idx = 1 end
+      if collapsed[files[idx].repo] then
+        collapsed[files[idx].repo] = nil
+        state.data.collapsed_repos = collapsed
+        browser.render()
+        goto_file(idx)
+        return
+      end
+    until idx == start
+  else -- "loop"
+    -- Wrap: find first visible file from the beginning
+    for j = 1, #files do
+      if not collapsed[files[j].repo] then
+        goto_file(j)
+        return
+      end
+    end
+  end
 end
 
 function M.prev_file()
@@ -407,8 +416,29 @@ function M.prev_file()
       return
     end
   until idx == start
-  ensure_file_visible(files[start])
-  goto_file(start)
+  local action = config.current.wrap_navigation
+  if action == "stop" then return end
+  if action == "expand" then
+    idx = start
+    repeat
+      idx = idx - 1
+      if idx < 1 then idx = #files end
+      if collapsed[files[idx].repo] then
+        collapsed[files[idx].repo] = nil
+        state.data.collapsed_repos = collapsed
+        browser.render()
+        goto_file(idx)
+        return
+      end
+    until idx == start
+  else -- "loop"
+    for j = #files, 1, -1 do
+      if not collapsed[files[j].repo] then
+        goto_file(j)
+        return
+      end
+    end
+  end
 end
 
 function M.mark_file_viewed()

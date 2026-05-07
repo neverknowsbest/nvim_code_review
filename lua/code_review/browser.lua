@@ -52,7 +52,7 @@ local function format_stat_str(stats, viewed_hunks, idx)
   local total = stats and stats.chunks
   if total then seen = math.min(seen, total) end
   local chunk_str = total and string.format("%d/%d", seen, total) or "-"
-  return string.format("%-5s h  +%-4d -%-4d", chunk_str, stats and stats.added or 0, stats and stats.removed or 0)
+  return string.format("%-5s h  +%-5d -%-5d", chunk_str, stats and stats.added or 0, stats and stats.removed or 0)
 end
 
 local function format_file_line(entry, stats, viewed_hunks, idx, available_width)
@@ -61,8 +61,7 @@ local function format_file_line(entry, stats, viewed_hunks, idx, available_width
   local stat_width = #stat
 
   local status_prefix = string.format("  [%s] %s", entry.status, icon)
-  -- Prefix width: 4 (spaces+brackets) + status len + 2 ("] ") + icon display width (2 or 0)
-  local prefix_width = 5 + #entry.status + (has_devicons and 2 or 0)
+  local prefix_width = vim.fn.strdisplaywidth(status_prefix)
   local path = entry.path
 
   local path_space = available_width - prefix_width - stat_width - 2
@@ -153,12 +152,31 @@ local function sum_stats(stats)
   return added, removed
 end
 
-local function build_file_list(files, stats, viewed_hunks, repos, available_width)
+local function sum_repo_stats(files, stats, start_idx, repo)
+  local added, removed = 0, 0
+  for j = start_idx, #files do
+    if files[j].repo ~= repo then break end
+    if stats[j] then
+      added = added + (stats[j].added or 0)
+      removed = removed + (stats[j].removed or 0)
+    end
+  end
+  return added, removed
+end
+
+local function format_repo_header(name, marker, added, removed, available_width)
+  local stat_str = string.format("%-5s h  +%-5d -%-5d", "-", added, removed)
+  local prefix = marker .. name .. "/"
+  local prefix_width = vim.fn.strdisplaywidth(prefix)
+  local pad = string.rep(" ", math.max(1, available_width - prefix_width - #stat_str))
+  return prefix .. pad .. stat_str
+end
+
+local function build_file_list(files, stats, viewed_hunks, available_width)
   local display = {}
   local line_map = {}
   local idx_to_line = {}
   local repo_line_map = {}
-  local multi = #repos > 1
   local current_repo = nil
   local collapsed = state.get("collapsed_repos")
   local active_repo_count = 0
@@ -169,7 +187,8 @@ local function build_file_list(files, stats, viewed_hunks, repos, available_widt
       active_repo_count = active_repo_count + 1
       local name = vim.fn.fnamemodify(entry.repo, ":t")
       local marker = collapsed[entry.repo] and " ▶ " or " ┌ "
-      table.insert(display, marker .. name .. "/")
+      local added, removed = sum_repo_stats(files, stats, i, current_repo)
+      table.insert(display, format_repo_header(name, marker, added, removed, available_width))
       repo_line_map[#display] = entry.repo
     end
     if not collapsed[entry.repo] then
@@ -193,8 +212,6 @@ function M.render()
     return
   end
 
-  vim.api.nvim_buf_clear_namespace(s.browser_buf, ns_stats, 0, -1)
-
   M._load_hunks_async()
 
   local files = state.get("files")
@@ -205,7 +222,7 @@ function M.render()
   local total_added, total_removed = sum_stats(stats)
 
   local available_width = vim.api.nvim_win_get_width(s.browser_win)
-  local display, line_map, idx_to_line, repo_line_map, active_repo_count = build_file_list(files, stats, viewed_hunks, repos, available_width)
+  local display, line_map, idx_to_line, repo_line_map, active_repo_count = build_file_list(files, stats, viewed_hunks, available_width)
 
   local header = build_header(#files, active_repo_count, #repos, total_added, total_removed)
   vim.wo[s.browser_win].winbar = header
@@ -216,15 +233,28 @@ function M.render()
   M._header_lines = 0
   M._max_name_len = available_width
 
-  vim.bo[s.browser_buf].modifiable = true
-  vim.api.nvim_buf_set_lines(s.browser_buf, 0, -1, false, display)
-  vim.bo[s.browser_buf].modifiable = false
+  -- Skip buffer rewrite if content unchanged
+  local old_lines = vim.api.nvim_buf_get_lines(s.browser_buf, 0, -1, false)
+  local lines_changed = #old_lines ~= #display
+  if not lines_changed then
+    for i, line in ipairs(display) do
+      if old_lines[i] ~= line then lines_changed = true break end
+    end
+  end
 
+  if lines_changed then
+    vim.bo[s.browser_buf].modifiable = true
+    vim.api.nvim_buf_set_lines(s.browser_buf, 0, -1, false, display)
+    vim.bo[s.browser_buf].modifiable = false
+  end
+
+  -- Apply all highlights in one pass (no flash)
+  vim.api.nvim_buf_clear_namespace(s.browser_buf, ns_stats, 0, -1)
   util.apply_stat_highlights(s.browser_buf, ns_stats, display)
+  M.highlight_current()
 
   M._setup_keymaps(s.browser_buf)
   util.setup_list_win(s.browser_win)
-  schedule_highlight()
 end
 
 function M.highlight_current()
@@ -238,10 +268,12 @@ function M.highlight_current()
   local current_idx = state.get("current_idx")
   local files = state.get("files")
 
-  -- Highlight repo headers
+  -- Highlight repo headers (name only, not stats)
   if M._repo_line_map then
     for line, _ in pairs(M._repo_line_map) do
-      vim.api.nvim_buf_set_extmark(s.browser_buf, ns_hl, line - 1, 0, { line_hl_group = "Directory" })
+      local text = vim.api.nvim_buf_get_lines(s.browser_buf, line - 1, line, false)[1] or ""
+      local name_end = text:find("%s%s") or #text
+      vim.api.nvim_buf_set_extmark(s.browser_buf, ns_hl, line - 1, 0, { end_col = name_end, hl_group = "Directory" })
     end
   end
 
