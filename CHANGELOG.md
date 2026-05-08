@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.9.0 (2026-05-08)
+
+### Features
+- **Browse mode** (`<leader>cb` / `:CodeReviewBrowse`): alternative review experience using real vim buffers with full LSP, undo, and editing — browser+log panels at the bottom, signs on real files
+- **Mode switching** (`<C-t>`): toggle between tab mode (focused review) and browse mode (editing with change views), preserving position and viewed state
+- `:CodeReview` while in browse mode switches to tab mode, and vice versa
+- `]c`/`[c` now advance across files: mark file + next when past last hunk, prev file's last hunk when before first
+- `gs` replaces `d` for diff toggle (works from any pane in both modes)
+- `gb` replaces `gf` for "go to browser" (frees `gf` for vim's go-to-file)
+- `<Esc>` from browser/log panes returns to the editor/viewer
+- Signs placed on real file buffers in browse mode (on navigation + optional BufEnter)
+- BufWritePost auto-refreshes signs after saving in browse mode
+- Viewer re-reads file content on refresh (picks up external changes)
+
+### Breaking Changes
+- `d` no longer toggles diff — use `gs` instead
+- `gf` no longer goes to browser — use `gb` instead
+- `e` (edit mode) removed — use `<C-t>` to switch to browse mode instead
+- Config key `edit` renamed to `switch_mode`, `toggle_diff` default changed from `"d"` to `"gs"`
+
+### Architecture
+- New `browse.lua` module: browse mode orchestrator (open/close/refresh, file nav, hunk nav, diff toggle, sign management)
+- `layout.lua`: added `mode`/`target_win` fields, `open_browse()`, `get_target_win()` with diff-window exclusion
+- `util.lua`: extracted shared `place_signs(buf, ns, hunks, line_count)` from viewer
+- `keymaps.lua`: single keymap definition, context-filtered (`setup_browse_buffer` for safe subset on real buffers)
+- `init.lua`: public `validate_and_load`/`compute_stats`/`populate_state`; mode-aware dispatch for all actions
+- `browser.lua`: `_load_hunks_async` refactored — extracted `process_hunk_batch` and `update_file_chunk_line`
+- Removed `viewer.edit()`/`viewer.unedit()` and `state.data.editing` — replaced by mode switching
+- Design doc: `docs/005-browse-mode.md`
+
 ## v0.8.0 (2026-05-07)
 
 ### Features

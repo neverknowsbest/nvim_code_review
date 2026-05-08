@@ -15,6 +15,7 @@ return {
   lazy = false,
   keys = {
     { "<leader>cr", "<cmd>CodeReview<cr>", desc = "Code Review" },
+    { "<leader>cb", "<cmd>CodeReviewBrowse<cr>", desc = "Code Review (browse)" },
   },
 }
 EOF
@@ -33,6 +34,7 @@ return {
   lazy = false,
   keys = {
     { "<leader>cr", "<cmd>CodeReview<cr>", desc = "Code Review" },
+    { "<leader>cb", "<cmd>CodeReviewBrowse<cr>", desc = "Code Review (browse)" },
   },
 }
 EOF

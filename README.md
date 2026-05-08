@@ -42,6 +42,7 @@ A Neovim plugin for reviewing git changes. Opens a dedicated tab with full synta
   end,
   keys = {
     { "<leader>cr", "<cmd>CodeReview<cr>", desc = "Code Review" },
+    { "<leader>cb", "<cmd>CodeReviewBrowse<cr>", desc = "Code Review (browse)" },
   },
 }
 ```
@@ -55,41 +56,68 @@ A Neovim plugin for reviewing git changes. Opens a dedicated tab with full synta
 
 ## Usage
 
-- `:CodeReview` — review uncommitted changes
+- `:CodeReview` — review uncommitted changes (tab mode)
 - `:CodeReview main` — review changes against a branch
-- `:CodeReviewClose` — close the review tab
+- `:CodeReviewBrowse` — open browse mode (real buffers + browser panel)
+- `:CodeReviewClose` — close the review session
 - `:CodeReviewReload` — hot reload plugin (picks up code changes without restart)
+
+## Modes
+
+### Tab mode (`:CodeReview` / `<leader>cr`)
+
+Opens a dedicated tab with a read-only viewer, file browser, and git log. Full keyset available — optimized for focused review sessions.
+
+### Browse mode (`:CodeReviewBrowse` / `<leader>cb`)
+
+Opens the file browser and log as bottom splits in your current tab. Files open as real vim buffers with LSP, undo, and full editing. Signs mark changed lines. Optimized for review-while-editing.
+
+Press `<C-t>` from any pane to toggle between modes (preserves position and progress). Calling `:CodeReview` while in browse mode switches to tab mode, and vice versa.
 
 ## Keybindings
 
-### Viewer (file pane)
+### Tab mode — Viewer
 
 | Key | Action |
 |-----|--------|
 | `<CR>` | Advance: next hunk, or mark file + next file at end |
 | `<S-CR>` | Reverse: previous hunk, or previous file |
-| `d` | Toggle side-by-side diff with base version |
-| `e` | Enter edit mode (open real file for editing) |
-| `]c` / `[c` | Next / previous hunk |
+| `]c` / `[c` | Next / previous hunk (advances across files) |
 | `]f` / `[f` | Next / previous file (skips deleted files) |
+| `gs` | Toggle side-by-side diff with base version |
 | `m` | Toggle current file viewed |
 | `M` | Toggle all files viewed |
 | `<Tab>` | Mark current file as viewed + next file |
 | `<S-Tab>` | Previous file |
 | `L` | Toggle git log panel |
 | `r` | Refresh file list |
+| `<C-t>` | Switch to browse mode |
 | `g?` | Show keyboard shortcuts |
 | `q` | Close review |
 
-### Edit mode
+### Browse mode — File buffer
 
-Press `e` in the viewer to open the actual file for editing with full LSP, undo, and formatting support. Use `gv` to return to the review viewer (auto-refreshes diff signs).
+| Key | Action |
+|-----|--------|
+| `]c` / `[c` | Next / previous hunk (advances across files) |
+| `]f` / `[f` | Next / previous file |
+| `gs` | Toggle side-by-side diff |
+| `gv` | Go to editor window |
+| `gb` | Go to file browser |
+| `gl` | Go to git log |
+| `g?` | Show keyboard shortcuts |
 
-### File browser
+### Browse mode — Browser pane
 
 | Key | Action |
 |-----|--------|
 | `<CR>` | Open file under cursor |
+| `m` / `M` | Toggle file / all files viewed |
+| `<Tab>` | Mark file + next |
+| `gs` | Toggle diff |
+| `L` | Toggle git log |
+| `r` | Refresh |
+| `<C-t>` | Switch to tab mode |
 | `q` | Close review |
 
 ### Git log
@@ -98,15 +126,17 @@ Press `e` in the viewer to open the actual file for editing with full LSP, undo,
 |-----|--------|
 | `<CR>` | Select commit (sets review range) |
 | `s` | Toggle range/single-commit mode |
+| `<Tab>` / `<S-Tab>` | Next / previous repo |
 | `q` | Close review |
 
-### Navigation (all panes)
+### Navigation (all panes, both modes)
 
 | Key | Action |
 |-----|--------|
-| `gv` | Go to viewer |
-| `gf` | Go to file browser |
+| `gv` | Go to viewer (tab) / editor (browse) |
+| `gb` | Go to file browser |
 | `gl` | Go to git log (opens if closed) |
+| `<Esc>` | Return to viewer/editor from browser or log |
 
 ## Configuration
 
@@ -124,16 +154,19 @@ require("code_review").setup({
     max_commits = 20,
     default_mode = "range",  -- "range" or "single"
   },
+  browse = {
+    signs_on_enter = true,  -- auto-place signs when entering tracked files
+  },
   keys = {
     advance = "<CR>",
     next_hunk = "]c",
     prev_hunk = "[c",
     next_file = "]f",
     prev_file = "[f",
-    toggle_diff = "d",
+    toggle_diff = "gs",
     toggle_log = "L",
     refresh = "r",
-    edit = "e",
+    switch_mode = "<C-t>",
     mark_file = "m",
     mark_all = "M",
     mark_and_next = "<Tab>",

@@ -91,6 +91,44 @@ end
 
 M._loading_gen = 0
 
+local function update_file_chunk_line(entry, stats_entry, idx, gen)
+  local s = layout.state
+  if not s.browser_buf or not vim.api.nvim_buf_is_valid(s.browser_buf) then return false end
+  if gen ~= M._loading_gen then return false end
+  local line_nr = M._idx_to_line and M._idx_to_line[idx]
+  if not line_nr then return false end
+  local viewed_hunks = state.get("viewed_hunks")
+  local new_line = format_file_line(entry, stats_entry, viewed_hunks, idx, M._max_name_len or 0)
+  vim.bo[s.browser_buf].modifiable = true
+  vim.api.nvim_buf_set_lines(s.browser_buf, line_nr - 1, line_nr, false, { new_line })
+  vim.bo[s.browser_buf].modifiable = false
+  return true
+end
+
+local function process_hunk_batch(files, stats, gen, start_idx)
+  local dirty = false
+  local i = start_idx
+  local batch = 0
+  while batch < 5 do
+    i = i + 1
+    if i > #files then return i, dirty end
+    if stats[i] and stats[i].chunks then
+      batch = batch + 1
+    else
+      local entry = files[i]
+      if entry and stats[i] then
+        local hunks = git.get_hunks(entry.path, entry.repo)
+        stats[i].chunks = #hunks
+        if update_file_chunk_line(entry, stats[i], i, gen) then
+          dirty = true
+        end
+      end
+      batch = batch + 1
+    end
+  end
+  return i, dirty
+end
+
 function M._load_hunks_async()
   M._loading_gen = M._loading_gen + 1
   local gen = M._loading_gen
@@ -104,38 +142,12 @@ function M._load_hunks_async()
       if dirty then schedule_highlight() end
       return
     end
-    -- Process a batch of files per tick
-    local batch = 0
-    while batch < 5 do
-      i = i + 1
-      if i > #files then
-        if dirty then schedule_highlight() end
-        return
-      end
-      if stats[i] and stats[i].chunks then
-        batch = batch + 1
-      else
-        local entry = files[i]
-        if entry then
-          local hunks = git.get_hunks(entry.path, entry.repo)
-          if stats[i] then
-            stats[i].chunks = #hunks
-            local s = layout.state
-            if s.browser_buf and vim.api.nvim_buf_is_valid(s.browser_buf) and gen == M._loading_gen then
-              local line_nr = M._idx_to_line and M._idx_to_line[i]
-              if line_nr then
-                local viewed_hunks = state.get("viewed_hunks")
-                local new_line = format_file_line(entry, stats[i], viewed_hunks, i, M._max_name_len or 0)
-                vim.bo[s.browser_buf].modifiable = true
-                vim.api.nvim_buf_set_lines(s.browser_buf, line_nr - 1, line_nr, false, { new_line })
-                vim.bo[s.browser_buf].modifiable = false
-                dirty = true
-              end
-            end
-          end
-        end
-        batch = batch + 1
-      end
+    local new_i, batch_dirty = process_hunk_batch(files, stats, gen, i)
+    dirty = dirty or batch_dirty
+    i = new_i
+    if i > #files then
+      if dirty then schedule_highlight() end
+      return
     end
     vim.defer_fn(load_next, 100)
   end
@@ -366,8 +378,12 @@ function M.select()
   local idx = M._line_map and M._line_map[line]
   local files = state.get("files")
   if idx and idx >= 1 and idx <= #files then
-    local cr = require("code_review")
-    cr._goto_file(idx)
+    if layout.state.mode == "browse" then
+      require("code_review.browse").open_file(idx)
+    else
+      local cr = require("code_review")
+      cr._goto_file(idx)
+    end
   end
 end
 

@@ -40,7 +40,17 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("CodeReview", function(cmd_opts)
     M.open(cmd_opts.args ~= "" and cmd_opts.args or nil)
   end, { nargs = "?" })
-  vim.api.nvim_create_user_command("CodeReviewClose", function() M.close() end, {})
+  vim.api.nvim_create_user_command("CodeReviewBrowse", function(cmd_opts)
+    require("code_review.browse").open(cmd_opts.args ~= "" and cmd_opts.args or nil)
+  end, { nargs = "?" })
+  vim.keymap.set("n", "<leader>cb", "<cmd>CodeReviewBrowse<cr>", { desc = "Code Review (browse)" })
+  vim.api.nvim_create_user_command("CodeReviewClose", function()
+    if layout.state.mode == "browse" then
+      require("code_review.browse").close()
+    else
+      M.close()
+    end
+  end, {})
   vim.api.nvim_create_user_command("CodeReviewReload", function()
     for name, _ in pairs(package.loaded) do
       if name:match("^code_review") then
@@ -68,7 +78,7 @@ function M._setup_keymaps()
   require("code_review.keymaps").setup_viewer(layout.state.viewer_buf)
 end
 
-local function validate_and_load(base_ref)
+function M.validate_and_load(base_ref)
   if base_ref then
     if not git.set_base(base_ref) then return nil, nil end
   else
@@ -92,7 +102,7 @@ local function validate_and_load(base_ref)
   return repos, all_files
 end
 
-local function compute_stats(all_files)
+function M.compute_stats(all_files)
   local stats = {}
   for i, entry in ipairs(all_files) do
     local added, removed = git.get_file_stats(entry.path, entry.repo)
@@ -101,12 +111,50 @@ local function compute_stats(all_files)
   return stats
 end
 
-local function populate_state(repos, all_files, stats)
+function M.populate_state(repos, all_files, stats)
   state.batch(function()
     state.set("repos", repos)
     state.set("stats", stats)
     state.set("files", all_files)
   end)
+end
+
+function M.build_file_list(repos)
+  local all_files = {}
+  for _, repo in ipairs(repos) do
+    local rd = git.get_repo_data(repo.path)
+    if rd then
+      for _, f in ipairs(rd.file_list) do
+        table.insert(all_files, { path = f, status = rd.files[f].status, repo = repo.path })
+      end
+    end
+  end
+  return all_files
+end
+
+function M.remap_viewed(old_files, old_stats, old_viewed, old_viewed_hunks, all_files, new_stats)
+  if #old_files == 0 then return end
+  local old_index = {}
+  for i, f in ipairs(old_files) do
+    old_index[f.repo .. ":" .. f.path] = i
+  end
+  local new_viewed = {}
+  local new_viewed_hunks = {}
+  for i, entry in ipairs(all_files) do
+    local old_i = old_index[entry.repo .. ":" .. entry.path]
+    if old_i then
+      local os = old_stats[old_i]
+      local ns = new_stats[i]
+      local changed = not os or os.added ~= ns.added or os.removed ~= ns.removed
+      if not changed then
+        if old_viewed[old_i] then new_viewed[i] = true end
+        if old_viewed_hunks[old_i] then new_viewed_hunks[i] = old_viewed_hunks[old_i] end
+        if os and os.chunks then ns.chunks = os.chunks end
+      end
+    end
+  end
+  state.data.viewed = new_viewed
+  state.data.viewed_hunks = new_viewed_hunks
 end
 
 local function restore_and_render()
@@ -157,18 +205,21 @@ local function setup_auto_refresh()
 end
 
 function M.open(base_ref)
-  if layout.state.tab and vim.api.nvim_tabpage_is_valid(layout.state.tab) then
-    vim.notify("A code review session is already open. Close it first with :CodeReviewClose", vim.log.levels.WARN)
+  if layout.state.mode == "browse" then
+    M.switch_to_tab()
+    return
+  elseif layout.state.mode == "tab" then
+    vim.notify("Tab mode already open", vim.log.levels.INFO)
     return
   end
 
-  local repos, all_files = validate_and_load(base_ref)
+  local repos, all_files = M.validate_and_load(base_ref)
   if not repos then return end
 
   layout.open()
   M._setup_keymaps()
 
-  populate_state(repos, all_files, compute_stats(all_files))
+  M.populate_state(repos, all_files, M.compute_stats(all_files))
 
   if config.current.log.show_on_open then
     log.open_panel()
@@ -195,8 +246,9 @@ local function refresh_browser_and_viewer(all_files, prev_idx)
     end
     local entry = all_files[idx]
     if entry and s.viewer_win and vim.api.nvim_win_is_valid(s.viewer_win) then
-      -- Only refresh diff signs, don't reload file or change viewed state
-      viewer.refresh_diff()
+      state.data.current_file = entry.path
+      state.data.current_repo = entry.repo
+      viewer.refresh_file()
     end
   else
     browser.render()
@@ -209,13 +261,12 @@ local function refresh_browser_and_viewer(all_files, prev_idx)
   end
 end
 
-local _soft_refresh_timer = nil
-function M.soft_refresh()
-  -- Only auto-refresh from index watcher (commit/stage/reset)
-  -- FocusGained and BufWritePost are too noisy for full refresh
-end
 
 function M.refresh()
+  if layout.state.mode == "browse" then
+    require("code_review.browse").refresh()
+    return
+  end
   if _refreshing then return end
   _refreshing = true
   _stats_gen = _stats_gen + 1
@@ -230,45 +281,10 @@ function M.refresh()
 
   local opts = { include_untracked = config.current.show_untracked }
   git.load_all(repos, opts, nil, function()
-    -- All repos loaded — build flat file list from repo data
-    local all_files = {}
-    for _, repo in ipairs(repos) do
-      local rd = git.get_repo_data(repo.path)
-      if rd then
-        for _, f in ipairs(rd.file_list) do
-          table.insert(all_files, { path = f, status = rd.files[f].status, repo = repo.path })
-        end
-      end
-    end
-
-    local new_stats = compute_stats(all_files)
-
-    -- Remap viewed/viewed_hunks, clearing if stats changed
-    if #old_files > 0 then
-      local old_index = {}
-      for i, f in ipairs(old_files) do
-        old_index[f.repo .. ":" .. f.path] = i
-      end
-      local new_viewed = {}
-      local new_viewed_hunks = {}
-      for i, entry in ipairs(all_files) do
-        local old_i = old_index[entry.repo .. ":" .. entry.path]
-        if old_i then
-          local os = old_stats[old_i]
-          local ns = new_stats[i]
-          local changed = not os or os.added ~= ns.added or os.removed ~= ns.removed
-          if not changed then
-            if old_viewed[old_i] then new_viewed[i] = true end
-            if old_viewed_hunks[old_i] then new_viewed_hunks[i] = old_viewed_hunks[old_i] end
-            if os and os.chunks then ns.chunks = os.chunks end
-          end
-        end
-      end
-      state.data.viewed = new_viewed
-      state.data.viewed_hunks = new_viewed_hunks
-    end
-
-    populate_state(repos, all_files, new_stats)
+    local all_files = M.build_file_list(repos)
+    local new_stats = M.compute_stats(all_files)
+    M.remap_viewed(old_files, old_stats, old_viewed, old_viewed_hunks, all_files, new_stats)
+    M.populate_state(repos, all_files, new_stats)
     refresh_browser_and_viewer(all_files, prev_idx)
     _refreshing = false
   end)
@@ -358,30 +374,39 @@ function M._goto_file(idx)
   goto_file(idx)
 end
 
-function M.next_file()
+local function step_file(direction)
+  if layout.state.mode == "browse" then
+    local browse = require("code_review.browse")
+    if direction == 1 then browse.next_file() else browse.prev_file() end
+    return
+  end
   local files = state.get("files")
   if #files == 0 then return end
   local start = math.min(state.get("current_idx"), #files)
   local collapsed = state.get("collapsed_repos")
+
+  local function advance(i)
+    i = i + direction
+    if i > #files then i = 1 end
+    if i < 1 then i = #files end
+    return i
+  end
+
   local idx = start
   repeat
-    idx = idx + 1
-    if idx > #files then idx = 1 end
-    local visible = not collapsed[files[idx].repo]
-    if visible and file_exists(files[idx]) then
+    idx = advance(idx)
+    if not collapsed[files[idx].repo] and file_exists(files[idx]) then
       goto_file(idx)
       return
     end
   until idx == start
-  -- No visible file found — apply wrap_navigation
+
   local action = config.current.wrap_navigation
   if action == "stop" then return end
   if action == "expand" then
-    -- Expand next collapsed repo
     idx = start
     repeat
-      idx = idx + 1
-      if idx > #files then idx = 1 end
+      idx = advance(idx)
       if collapsed[files[idx].repo] then
         collapsed[files[idx].repo] = nil
         state.data.collapsed_repos = collapsed
@@ -390,9 +415,10 @@ function M.next_file()
         return
       end
     until idx == start
-  else -- "loop"
-    -- Wrap: find first visible file from the beginning
-    for j = 1, #files do
+  else
+    local first, last, step = 1, #files, 1
+    if direction == -1 then first, last, step = #files, 1, -1 end
+    for j = first, last, step do
       if not collapsed[files[j].repo] then
         goto_file(j)
         return
@@ -401,43 +427,30 @@ function M.next_file()
   end
 end
 
-function M.prev_file()
-  local files = state.get("files")
-  if #files == 0 then return end
-  local start = math.min(state.get("current_idx"), #files)
-  local collapsed = state.get("collapsed_repos")
-  local idx = start
-  repeat
-    idx = idx - 1
-    if idx < 1 then idx = #files end
-    local visible = not collapsed[files[idx].repo]
-    if visible and file_exists(files[idx]) then
-      goto_file(idx)
-      return
-    end
-  until idx == start
-  local action = config.current.wrap_navigation
-  if action == "stop" then return end
-  if action == "expand" then
-    idx = start
-    repeat
-      idx = idx - 1
-      if idx < 1 then idx = #files end
-      if collapsed[files[idx].repo] then
-        collapsed[files[idx].repo] = nil
-        state.data.collapsed_repos = collapsed
-        browser.render()
-        goto_file(idx)
-        return
-      end
-    until idx == start
-  else -- "loop"
-    for j = #files, 1, -1 do
-      if not collapsed[files[j].repo] then
-        goto_file(j)
-        return
-      end
-    end
+function M.next_file() step_file(1) end
+function M.prev_file() step_file(-1) end
+
+function M.next_hunk()
+  if layout.state.mode == "browse" then
+    require("code_review.browse").next_hunk()
+  else
+    viewer.next_hunk()
+  end
+end
+
+function M.prev_hunk()
+  if layout.state.mode == "browse" then
+    require("code_review.browse").prev_hunk()
+  else
+    viewer.prev_hunk()
+  end
+end
+
+function M.toggle_diff()
+  if layout.state.mode == "browse" then
+    require("code_review.browse").toggle_diff()
+  else
+    viewer.toggle_diff()
   end
 end
 
@@ -445,7 +458,6 @@ function M.mark_file_viewed()
   local idx = state.get("current_idx")
   local viewed = state.get("viewed")
   if viewed[idx] then
-    -- Unmark
     viewed[idx] = nil
     local viewed_hunks = state.get("viewed_hunks")
     viewed_hunks[idx] = nil
@@ -458,7 +470,6 @@ end
 function M.mark_all_viewed()
   local files = state.get("files")
   local viewed = state.get("viewed")
-  -- Toggle: if all viewed, unmark all; otherwise mark all
   local all_viewed = true
   for i, _ in ipairs(files) do
     if not viewed[i] then all_viewed = false; break end
@@ -544,7 +555,91 @@ function M.reverse_advance()
   end
 end
 
+function M.switch_to_browse()
+  if layout.state.mode ~= "tab" then return end
+  local current_idx = state.get("current_idx")
+  local current_file = state.data.current_file
+  local current_repo = state.data.current_repo
+
+  -- Tear down tab mode UI without resetting data
+  if augroup then
+    vim.api.nvim_del_augroup_by_id(augroup)
+    augroup = nil
+  end
+  log.close()
+  viewer.close_diff()
+  viewer.reset()
+  layout.close()
+  browser._keymaps_set = false
+
+  -- Open browse mode with existing state
+  local browse = require("code_review.browse")
+  browse.open_with_state(current_file, current_repo, current_idx)
+end
+
+function M.switch_to_tab()
+  if layout.state.mode ~= "browse" then return end
+  local current_idx = state.get("current_idx")
+
+  -- Tear down browse mode UI without resetting data
+  local browse = require("code_review.browse")
+  browse.close_ui_only()
+
+  -- Open tab mode with existing state
+  layout.open()
+  M._setup_keymaps()
+
+  if config.current.log.show_on_open then
+    log.open_panel()
+  end
+
+  browser.render()
+  local s = layout.state
+  if s.browser_win and vim.api.nvim_win_is_valid(s.browser_win) then
+    vim.api.nvim_win_call(s.browser_win, function() vim.cmd("normal! gg") end)
+    local line = browser.line_for_idx(current_idx)
+    pcall(vim.api.nvim_win_set_cursor, s.browser_win, { line, 0 })
+  end
+  local files = state.get("files")
+  local entry = files[current_idx]
+  if entry then
+    viewer.show_file(entry.path, entry.repo)
+  end
+  if s.viewer_win and vim.api.nvim_win_is_valid(s.viewer_win) then
+    vim.api.nvim_set_current_win(s.viewer_win)
+  end
+
+  local function setup_auto_refresh_tab()
+    augroup = vim.api.nvim_create_augroup("CodeReviewAutoRefresh", { clear = true })
+    if config.current.auto_refresh then
+      vim.api.nvim_create_autocmd("FocusGained", {
+        group = augroup,
+        callback = function()
+          if layout.state.tab
+            and vim.api.nvim_tabpage_is_valid(layout.state.tab)
+            and vim.api.nvim_get_current_tabpage() == layout.state.tab then
+            M.refresh()
+          end
+        end,
+      })
+    end
+  end
+  setup_auto_refresh_tab()
+end
+
+function M.switch_mode()
+  if layout.state.mode == "tab" then
+    M.switch_to_browse()
+  elseif layout.state.mode == "browse" then
+    M.switch_to_tab()
+  end
+end
+
 function M.close()
+  if layout.state.mode == "browse" then
+    require("code_review.browse").close()
+    return
+  end
   session.save()
   if augroup then
     vim.api.nvim_del_augroup_by_id(augroup)

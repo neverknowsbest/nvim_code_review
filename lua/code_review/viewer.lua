@@ -83,28 +83,7 @@ end
 
 local function place_signs(buf, hunks, line_count)
   vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
-  local cfg = config.current
-  for _, hunk in ipairs(hunks) do
-    if hunk.type == "delete" then
-      local lnum = math.min(math.max(0, hunk.start - 1), math.max(0, line_count - 1))
-      vim.api.nvim_buf_set_extmark(buf, ns, lnum, 0, {
-        sign_text = cfg.signs.delete,
-        sign_hl_group = "CodeReviewDelete",
-        line_hl_group = "CodeReviewDeleteLine",
-      })
-    else
-      for i = 0, hunk.count - 1 do
-        local lnum = hunk.start - 1 + i
-        if lnum < line_count then
-          vim.api.nvim_buf_set_extmark(buf, ns, lnum, 0, {
-            sign_text = cfg.signs.change,
-            sign_hl_group = "CodeReviewChange",
-            line_hl_group = "CodeReviewChangeLine",
-          })
-        end
-      end
-    end
-  end
+  util.place_signs(buf, ns, hunks, line_count)
 end
 
 -- Cursor positioning
@@ -128,31 +107,56 @@ end
 
 -- Main show_file
 
+local function load_file_into_viewer(filepath, repo_path)
+  local s = layout.state
+  if not s.viewer_buf or not vim.api.nvim_buf_is_valid(s.viewer_buf) then return nil end
+  if not s.viewer_win or not vim.api.nvim_win_is_valid(s.viewer_win) then return nil end
+
+  local lines = read_file(repo_path, filepath)
+  set_buffer_content(s.viewer_buf, lines)
+  set_filetype(s.viewer_buf, filepath)
+  detach_lsp(s.viewer_buf)
+
+  local hunks = git.get_hunks(filepath, repo_path)
+  place_signs(s.viewer_buf, hunks, #lines)
+  return hunks, #lines
+end
+
 function M.show_file(filepath, repo_path)
   state.data.current_file = filepath
   state.data.current_repo = repo_path
   local s = layout.state
-  if not s.viewer_buf or not vim.api.nvim_buf_is_valid(s.viewer_buf) then return end
   if not s.viewer_win or not vim.api.nvim_win_is_valid(s.viewer_win) then return end
 
   if vim.api.nvim_win_get_buf(s.viewer_win) ~= s.viewer_buf then
     vim.api.nvim_win_set_buf(s.viewer_win, s.viewer_buf)
   end
 
-  local lines = read_file(repo_path, filepath)
-  set_buffer_content(s.viewer_buf, lines)
-  set_filetype(s.viewer_buf, filepath)
-  detach_lsp(s.viewer_buf)
+  local hunks, line_count = load_file_into_viewer(filepath, repo_path)
+  if not hunks then return end
   set_buffer_name(s.viewer_buf, s.viewer_win, filepath)
 
-  local hunks = git.get_hunks(filepath, repo_path)
-  place_signs(s.viewer_buf, hunks, #lines)
-
   if #hunks > 0 then
-    jump_to_first_unviewed_hunk(s.viewer_win, hunks, #lines)
+    jump_to_first_unviewed_hunk(s.viewer_win, hunks, line_count)
   else
     vim.api.nvim_win_set_cursor(s.viewer_win, { 1, 0 })
   end
+end
+
+function M.refresh_file()
+  local filepath = state.data.current_file
+  local repo_path = state.data.current_repo
+  if not filepath or not repo_path then return end
+
+  local s = layout.state
+  if not s.viewer_win or not vim.api.nvim_win_is_valid(s.viewer_win) then return end
+  local cursor = vim.api.nvim_win_get_cursor(s.viewer_win)
+
+  local _, line_count = load_file_into_viewer(filepath, repo_path)
+  if not line_count then return end
+
+  local safe_cursor = { math.min(cursor[1], line_count), cursor[2] }
+  pcall(vim.api.nvim_win_set_cursor, s.viewer_win, safe_cursor)
 end
 
 -- Hunk navigation
@@ -164,7 +168,11 @@ function M.next_hunk()
   local repo = state.data.current_repo
   if not file or not repo then return end
   local hunks = git.get_hunks(file, repo)
-  if #hunks == 0 then return end
+  local cr = require("code_review")
+  if #hunks == 0 then
+    cr.mark_and_next()
+    return
+  end
   local cursor = vim.api.nvim_win_get_cursor(s.viewer_win)[1]
   local line_count = vim.api.nvim_buf_line_count(s.viewer_buf)
   local browser = require("code_review.browser")
@@ -178,10 +186,7 @@ function M.next_hunk()
       return
     end
   end
-  local target = math.max(1, math.min(hunks[1].start, line_count))
-  vim.api.nvim_win_set_cursor(s.viewer_win, { target, 0 })
-  vim.api.nvim_win_call(s.viewer_win, function() vim.cmd("normal! zz") end)
-  browser.mark_hunk_viewed(idx, hunks[1].start)
+  cr.mark_and_next()
 end
 
 function M.prev_hunk()
@@ -191,7 +196,11 @@ function M.prev_hunk()
   local repo = state.data.current_repo
   if not file or not repo then return end
   local hunks = git.get_hunks(file, repo)
-  if #hunks == 0 then return end
+  local cr = require("code_review")
+  if #hunks == 0 then
+    cr.prev_file()
+    return
+  end
   local cursor = vim.api.nvim_win_get_cursor(s.viewer_win)[1]
   local line_count = vim.api.nvim_buf_line_count(s.viewer_buf)
   local browser = require("code_review.browser")
@@ -205,10 +214,21 @@ function M.prev_hunk()
       return
     end
   end
-  local target = math.max(1, math.min(hunks[#hunks].start, line_count))
-  vim.api.nvim_win_set_cursor(s.viewer_win, { target, 0 })
-  vim.api.nvim_win_call(s.viewer_win, function() vim.cmd("normal! zz") end)
-  browser.mark_hunk_viewed(idx, hunks[#hunks].start)
+  -- At or before first hunk — go to previous file's last hunk
+  cr.prev_file()
+  s = layout.state
+  if not s.viewer_win or not vim.api.nvim_win_is_valid(s.viewer_win) then return end
+  local new_file = state.data.current_file
+  local new_repo = state.data.current_repo
+  if new_file and new_repo then
+    local new_hunks = git.get_hunks(new_file, new_repo)
+    if #new_hunks > 0 then
+      local new_line_count = vim.api.nvim_buf_line_count(s.viewer_buf)
+      local target = math.max(1, math.min(new_hunks[#new_hunks].start, new_line_count))
+      vim.api.nvim_win_set_cursor(s.viewer_win, { target, 0 })
+      vim.api.nvim_win_call(s.viewer_win, function() vim.cmd("normal! zz") end)
+    end
+  end
 end
 
 -- Diff toggle
@@ -262,6 +282,7 @@ function M._open_diff()
   vim.wo[s.viewer_win].winhl =
     "DiffAdd:CodeReviewChangeLine,DiffChange:CodeReviewChangeLine,DiffDelete:CodeReviewDeleteLine,DiffText:CodeReviewChangeLine"
 
+  vim.keymap.set("n", "<Esc>", function() M.toggle_diff() end, { buffer = M._diff_buf, nowait = true, silent = true })
   vim.api.nvim_set_current_win(s.viewer_win)
 end
 
@@ -284,62 +305,10 @@ function M.refresh_diff()
   M._open_diff()
 end
 
--- Edit mode
-
-function M.edit()
-  local s = layout.state
-  if not s.viewer_win or not vim.api.nvim_win_is_valid(s.viewer_win) then return end
-  local file = state.data.current_file
-  local repo = state.data.current_repo
-  if not file or not repo then return end
-
-  M.close_diff()
-  local cursor = vim.api.nvim_win_get_cursor(s.viewer_win)
-
-  local abs_path = repo .. "/" .. file
-  vim.api.nvim_set_current_win(s.viewer_win)
-  vim.cmd("edit " .. vim.fn.fnameescape(abs_path))
-
-  pcall(vim.api.nvim_win_set_cursor, s.viewer_win, cursor)
-  vim.cmd("normal! zz")
-  state.data.editing = true
-
-  local edit_buf = vim.api.nvim_win_get_buf(s.viewer_win)
-  require("code_review.keymaps").setup_nav(edit_buf)
-  vim.notify("Editing — gv to return to review", vim.log.levels.INFO)
-end
-
-function M.unedit()
-  local s = layout.state
-  if not s.viewer_win or not vim.api.nvim_win_is_valid(s.viewer_win) then return end
-  if not state.data.editing then return end
-
-  -- Close any floating windows (LSP hover, etc.)
-  for _, win in ipairs(vim.api.nvim_list_wins()) do
-    if vim.api.nvim_win_get_config(win).relative ~= "" then
-      pcall(vim.api.nvim_win_close, win, true)
-    end
-  end
-
-  local cursor = vim.api.nvim_win_get_cursor(s.viewer_win)
-  state.data.editing = false
-
-  vim.api.nvim_win_set_buf(s.viewer_win, s.viewer_buf)
-  local file = state.data.current_file
-  local repo = state.data.current_repo
-  if file and repo then
-    M.show_file(file, repo)
-    local line_count = vim.api.nvim_buf_line_count(s.viewer_buf)
-    local safe_cursor = { math.min(cursor[1], line_count), cursor[2] }
-    pcall(vim.api.nvim_win_set_cursor, s.viewer_win, safe_cursor)
-  end
-end
-
 function M.reset()
   state.data.current_file = nil
   state.data.current_repo = nil
   state.data.diff_active = false
-  state.data.editing = false
 end
 
 return M

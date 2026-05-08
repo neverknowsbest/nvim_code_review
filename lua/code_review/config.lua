@@ -12,16 +12,19 @@ M.defaults = {
     max_commits = 20,
     default_mode = "range", -- "range" or "single"
   },
+  browse = {
+    signs_on_enter = true,
+  },
   keys = {
     advance = "<CR>",
     next_hunk = "]c",
     prev_hunk = "[c",
     next_file = "]f",
     prev_file = "[f",
-    toggle_diff = "d",
+    toggle_diff = "gs",
     toggle_log = "L",
     refresh = "r",
-    edit = "e",
+    switch_mode = "<C-t>",
     mark_file = "m",
     mark_all = "M",
     mark_and_next = "<Tab>",

@@ -37,4 +37,29 @@ function M.setup_list_win(win)
 	vim.wo[win].wrap = false
 end
 
+function M.place_signs(buf, ns, hunks, line_count)
+	local cfg = require("code_review.config").current
+	for _, hunk in ipairs(hunks) do
+		if hunk.type == "delete" then
+			local lnum = math.min(math.max(0, hunk.start - 1), math.max(0, line_count - 1))
+			vim.api.nvim_buf_set_extmark(buf, ns, lnum, 0, {
+				sign_text = cfg.signs.delete,
+				sign_hl_group = "CodeReviewDelete",
+				line_hl_group = "CodeReviewDeleteLine",
+			})
+		else
+			for i = 0, hunk.count - 1 do
+				local lnum = hunk.start - 1 + i
+				if lnum < line_count then
+					vim.api.nvim_buf_set_extmark(buf, ns, lnum, 0, {
+						sign_text = cfg.signs.change,
+						sign_hl_group = "CodeReviewChange",
+						line_hl_group = "CodeReviewChangeLine",
+					})
+				end
+			end
+		end
+	end
+end
+
 return M

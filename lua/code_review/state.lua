@@ -18,7 +18,6 @@ M.data = {
   log_selected = 0,
   single_commit_mode = false,
   diff_active = false,
-  editing = false,
   current_file = nil,
   current_repo = nil,
 }
