@@ -269,6 +269,7 @@ local function build_repo_from_results(rp, opts, cmd_results, has_base, diff_ran
 
   local file_list, files = build_tracked_files(file_list_raw, deleted_set, stats_map, raw, rp, has_base)
   add_untracked_files(raw, rp, file_list, files)
+  table.sort(file_list)
 
   return {
     file_list = file_list,

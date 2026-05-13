@@ -91,6 +91,7 @@ Press `<C-t>` from any pane to toggle between modes (preserves position and prog
 | `<S-Tab>` | Previous file |
 | `L` | Toggle git log panel |
 | `r` | Refresh file list |
+| `gx` | Toggle file exclusions |
 | `<C-t>` | Switch to browse mode |
 | `g?` | Show keyboard shortcuts |
 | `q` | Close review |
@@ -117,6 +118,7 @@ Press `<C-t>` from any pane to toggle between modes (preserves position and prog
 | `gs` | Toggle diff |
 | `L` | Toggle git log |
 | `r` | Refresh |
+| `gx` | Toggle file exclusions |
 | `<C-t>` | Switch to tab mode |
 | `q` | Close review |
 
@@ -136,7 +138,7 @@ Press `<C-t>` from any pane to toggle between modes (preserves position and prog
 | `gv` | Go to viewer (tab) / editor (browse) |
 | `gb` | Go to file browser |
 | `gl` | Go to git log (opens if closed) |
-| `<Esc>` | Return to viewer/editor from browser or log |
+| `<Esc>` | Close diff split, or return to viewer/editor |
 
 ## Configuration
 
@@ -149,6 +151,7 @@ require("code_review").setup({
   show_untracked = true,
   persist_session = true,
   auto_refresh = true,
+  exclude_patterns = {},    -- glob patterns to hide (e.g. {"*.md", "docs/*"})
   log = {
     show_on_open = true,
     max_commits = 20,

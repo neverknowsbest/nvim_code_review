@@ -7,6 +7,7 @@ M.defaults = {
   persist_session = true,
   auto_refresh = true,
   wrap_navigation = "loop", -- "loop" | "stop" | "expand"
+  exclude_patterns = {},    -- glob patterns to exclude (e.g. {"*.md", "docs/*"})
   log = {
     show_on_open = true,
     max_commits = 20,

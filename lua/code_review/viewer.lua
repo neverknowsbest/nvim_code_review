@@ -206,15 +206,23 @@ function M.prev_hunk()
   local browser = require("code_review.browser")
   local idx = state.get("current_idx")
   for i = #hunks, 1, -1 do
-    if hunks[i].start < cursor then
+    local hunk_end = hunks[i].start + math.max(hunks[i].count - 1, 0)
+    if cursor > hunk_end then
       local target = math.max(1, math.min(hunks[i].start, line_count))
       vim.api.nvim_win_set_cursor(s.viewer_win, { target, 0 })
       vim.api.nvim_win_call(s.viewer_win, function() vim.cmd("normal! zz") end)
       browser.mark_hunk_viewed(idx, hunks[i].start)
       return
     end
+    if hunks[i].start < cursor and cursor <= hunk_end and i > 1 then
+      local target = math.max(1, math.min(hunks[i - 1].start, line_count))
+      vim.api.nvim_win_set_cursor(s.viewer_win, { target, 0 })
+      vim.api.nvim_win_call(s.viewer_win, function() vim.cmd("normal! zz") end)
+      browser.mark_hunk_viewed(idx, hunks[i - 1].start)
+      return
+    end
   end
-  -- At or before first hunk — go to previous file's last hunk
+  -- At or inside first hunk — go to previous file's last hunk
   cr.prev_file()
   s = layout.state
   if not s.viewer_win or not vim.api.nvim_win_is_valid(s.viewer_win) then return end

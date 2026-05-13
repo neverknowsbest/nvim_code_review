@@ -19,6 +19,7 @@ local function setup_shared(buf)
   vim.keymap.set("n", keys.switch_mode, function() cr.switch_mode() end, o)
   vim.keymap.set("n", keys.toggle_log, function() log.toggle() end, o)
   vim.keymap.set("n", keys.refresh, function() cr.refresh() end, o)
+  vim.keymap.set("n", "gx", function() cr.toggle_exclusions() end, o)
   vim.keymap.set("n", "g?", function() require("code_review.help").toggle() end, o)
   vim.keymap.set("n", keys.quit, function() cr.close() end, o)
   M.setup_nav(buf)
@@ -41,6 +42,7 @@ function M.setup_browser(buf)
   local o = opts(buf)
   local browser = require("code_review.browser")
   vim.keymap.set("n", "<CR>", function() browser.select() end, o)
+  vim.keymap.set("n", "<2-LeftMouse>", function() browser.select() end, o)
 end
 
 function M.setup_log(buf)
@@ -48,6 +50,7 @@ function M.setup_log(buf)
   local log = require("code_review.log")
 
   vim.keymap.set("n", "<CR>", function() log.select() end, o)
+  vim.keymap.set("n", "<2-LeftMouse>", function() log.select() end, o)
   vim.keymap.set("n", "s", function() log.toggle_mode() end, o)
   vim.keymap.set("n", "<Tab>", function() log.cycle_repo() end, o)
   vim.keymap.set("n", "<S-Tab>", function() log.cycle_repo_back() end, o)
@@ -82,6 +85,12 @@ function M.setup_nav(buf)
   end, o)
   vim.keymap.set("n", "<Esc>", function()
     local s = layout.state
+    local cr = require("code_review")
+    local st = require("code_review.state")
+    if st.data.diff_active then
+      cr.toggle_diff()
+      return
+    end
     if s.mode == "browse" then
       local win = layout.get_target_win()
       if win then vim.api.nvim_set_current_win(win) end

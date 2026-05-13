@@ -189,11 +189,19 @@ function M.prev_hunk()
   local idx = state.get("current_idx")
 
   for i = #hunks, 1, -1 do
-    if hunks[i].start < cursor then
+    local hunk_end = hunks[i].start + math.max(hunks[i].count - 1, 0)
+    if cursor > hunk_end then
       local target = math.max(1, math.min(hunks[i].start, line_count))
       vim.api.nvim_win_set_cursor(win, { target, 0 })
       vim.api.nvim_win_call(win, function() vim.cmd("normal! zz") end)
       browser.mark_hunk_viewed(idx, hunks[i].start)
+      return
+    end
+    if hunks[i].start < cursor and cursor <= hunk_end and i > 1 then
+      local target = math.max(1, math.min(hunks[i - 1].start, line_count))
+      vim.api.nvim_win_set_cursor(win, { target, 0 })
+      vim.api.nvim_win_call(win, function() vim.cmd("normal! zz") end)
+      browser.mark_hunk_viewed(idx, hunks[i - 1].start)
       return
     end
   end
@@ -371,6 +379,15 @@ local function setup_autocmds()
       end,
     })
   end
+
+  vim.api.nvim_create_autocmd("WinResized", {
+    group = augroup,
+    callback = function()
+      if layout.state.mode == "browse" and layout.state.browser_win and vim.api.nvim_win_is_valid(layout.state.browser_win) then
+        browser.render()
+      end
+    end,
+  })
 
   vim.api.nvim_create_autocmd("BufWritePost", {
     group = augroup,

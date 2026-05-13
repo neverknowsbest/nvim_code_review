@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.10.0 (2026-05-13)
+
+### Features
+- `exclude_patterns` config option: glob patterns to hide files from the browser (e.g. `{"*.md", "docs/*"}`)
+- `gx` toggles exclusions on/off (shows all files temporarily)
+- New files (`[N]`) highlighted green in the browser
+- Double-click (`<2-LeftMouse>`) selects files in browser and commits in log
+- `<Esc>` closes the diff split from any pane
+- Browser re-renders on window resize (stats columns reflow correctly)
+- File list sorted alphabetically after merging tracked + untracked files
+
+### Bug Fixes
+- Fixed `<S-CR>` / `[c` requiring two presses on single-hunk files (new files). `prev_hunk` now skips the current hunk and goes directly to previous file
+- Fixed viewer showing stale filename in winbar after committing all changes
+- Fixed browser stats columns stuck at old positions after window resize or divider drag
+
 ## v0.9.0 (2026-05-08)
 
 ### Features

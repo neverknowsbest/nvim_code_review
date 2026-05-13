@@ -93,7 +93,8 @@ function M.validate_and_load(base_ref)
   end
 
   -- Skip numstat for fast initial load; stats loaded in background
-  local all_files = git.load_all_repos(repos)
+  git.load_all_repos(repos)
+  local all_files = M.build_file_list(repos)
   if #all_files == 0 and not config.current.log.show_on_open then
     vim.notify("No uncommitted changes found", vim.log.levels.INFO)
     return nil, nil
@@ -119,16 +120,43 @@ function M.populate_state(repos, all_files, stats)
   end)
 end
 
+local _exclusions_active = true
+
+local function is_excluded(path)
+  if not _exclusions_active then return false end
+  local patterns = config.current.exclude_patterns
+  if not patterns or #patterns == 0 then return false end
+  for _, pattern in ipairs(patterns) do
+    if vim.fn.matchstrpos(path, vim.fn.glob2regpat(pattern))[2] >= 0 then
+      return true
+    end
+  end
+  return false
+end
+
+function M.toggle_exclusions()
+  _exclusions_active = not _exclusions_active
+  local label = _exclusions_active and "on" or "off"
+  vim.notify("Exclusions " .. label, vim.log.levels.INFO)
+  M.refresh()
+end
+
 function M.build_file_list(repos)
   local all_files = {}
+  local excluded = 0
   for _, repo in ipairs(repos) do
     local rd = git.get_repo_data(repo.path)
     if rd then
       for _, f in ipairs(rd.file_list) do
-        table.insert(all_files, { path = f, status = rd.files[f].status, repo = repo.path })
+        if not is_excluded(f) then
+          table.insert(all_files, { path = f, status = rd.files[f].status, repo = repo.path })
+        else
+          excluded = excluded + 1
+        end
       end
     end
   end
+  state.data.excluded_count = excluded
   return all_files
 end
 
@@ -187,6 +215,14 @@ local function setup_auto_refresh()
       end,
     })
   end
+  vim.api.nvim_create_autocmd("WinResized", {
+    group = augroup,
+    callback = function()
+      if layout.state.mode and layout.state.browser_win and vim.api.nvim_win_is_valid(layout.state.browser_win) then
+        browser.render()
+      end
+    end,
+  })
   vim.api.nvim_create_autocmd("DirChanged", {
     group = augroup,
     callback = function()
@@ -257,7 +293,13 @@ local function refresh_browser_and_viewer(all_files, prev_idx)
       vim.bo[s.viewer_buf].modifiable = true
       vim.api.nvim_buf_set_lines(s.viewer_buf, 0, -1, false, { "  No changes to review" })
       vim.bo[s.viewer_buf].modifiable = false
+      pcall(vim.api.nvim_buf_set_name, s.viewer_buf, "")
     end
+    if s.viewer_win and vim.api.nvim_win_is_valid(s.viewer_win) then
+      vim.wo[s.viewer_win].winbar = ""
+    end
+    state.data.current_file = nil
+    state.data.current_repo = nil
   end
 end
 

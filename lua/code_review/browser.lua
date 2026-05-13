@@ -81,9 +81,11 @@ local function build_header(file_count, active_repo_count, total_repos, total_ad
   if total_repos > 1 then
     repo_label = string.format(" %d/%d repos", active_repo_count, total_repos)
   end
+  local excluded = state.data.excluded_count or 0
+  local excluded_label = excluded > 0 and string.format("  %d excluded", excluded) or ""
   local left = string.format(
-    "%%#CodeReviewBarBold# %d changed%%#CodeReviewBar#%s  %%#CodeReviewBarAdd#+%d %%#CodeReviewBarDel#-%d%%#CodeReviewBar#",
-    file_count, repo_label, total_added, total_removed
+    "%%#CodeReviewBarBold# %d changed%%#CodeReviewBar#%s%s  %%#CodeReviewBarAdd#+%d %%#CodeReviewBarDel#-%d%%#CodeReviewBar#",
+    file_count, repo_label, excluded_label, total_added, total_removed
   )
   local help = get_keys_help()
   return left .. "%=" .. "%#CodeReviewBar#" .. help
@@ -289,12 +291,16 @@ function M.highlight_current()
     end
   end
 
-  -- Dim deleted files
+  -- Color deleted and new files
   for i, entry in ipairs(files) do
-    if entry.status == "UD" and i ~= current_idx then
+    if i ~= current_idx then
       local l = M._idx_to_line and M._idx_to_line[i]
       if l then
-        vim.api.nvim_buf_set_extmark(s.browser_buf, ns_hl, l - 1, 0, { line_hl_group = "CodeReviewDelete" })
+        if entry.status == "UD" then
+          vim.api.nvim_buf_set_extmark(s.browser_buf, ns_hl, l - 1, 0, { line_hl_group = "CodeReviewDelete" })
+        elseif entry.status == "N" then
+          vim.api.nvim_buf_set_extmark(s.browser_buf, ns_hl, l - 1, 0, { line_hl_group = "CodeReviewChange" })
+        end
       end
     end
   end
